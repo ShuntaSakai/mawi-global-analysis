@@ -258,3 +258,37 @@ Follow YAGNI.
 Do not add Docker, workflow engines, ML-based scan detection, automatic threshold selection, or unrelated refactors unless a separately approved design calls for them.
 
 If a proposed change alters research semantics, experiment comparability, cache identity, or the M4 human-review gate, treat it as a design change rather than a routine refactor.
+
+### Turn-end commit message
+
+At the end of **every Codex turn in which repository files were modified**,
+always output a concise suggested Git commit message based on the changes made
+during that turn.
+
+The suggested commit message must:
+
+- be a single line,
+- be concise and specific,
+- describe the actual implementation performed in that turn,
+- preferably follow Conventional Commits style when appropriate, such as:
+  - `feat: ...`
+  - `fix: ...`
+  - `test: ...`
+  - `refactor: ...`
+  - `docs: ...`
+  - `chore: ...`
+- not claim work that was not actually completed.
+
+Use the following format at the end of the response:
+
+`Suggested commit message: <message>`
+
+If multiple related changes were made in the same turn, summarize them in one
+commit message rather than listing multiple alternatives.
+
+If no repository files were modified during the turn, output:
+
+`Suggested commit message: none (no repository changes)`
+
+Codex must only **suggest** the message. Do not run `git add`, `git commit`,
+or `git push`; those actions remain the human's responsibility.
