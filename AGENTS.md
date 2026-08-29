@@ -15,20 +15,108 @@ Do not infer research semantics from code alone when the spec defines them expli
 
 ## Development workflow
 
-For M0–M4 implementation, use the approved Superpowers workflow:
+### Repository workflow override
 
-1. Create or verify an isolated worktree / feature branch with `superpowers:using-git-worktrees`.
-2. Execute the implementation plan with `superpowers:subagent-driven-development`.
-3. Use a fresh implementer subagent per meaningful task.
-4. After each task, perform both spec-compliance review and code-quality review.
-5. Fix findings and re-review before moving to the next task.
-6. Follow TDD where the plan specifies it: failing test → minimal implementation → passing test.
-7. Keep a progress ledger so completed tasks are not re-dispatched after context loss.
-8. Commit meaningful, independently testable changes task by task.
-9. Perform a whole-branch review after the planned milestone set is complete.
+For this repository, Codex and other agentic contributors must work directly
+in the existing `main` branch working tree unless the human explicitly requests
+a different workflow.
 
-Do **not** implement directly on `main` unless the human explicitly approves that exception.
-Do **not** merge, push to a shared branch, publish, or perform other external side effects without explicit approval.
+This section defines the repository's Git workflow and **overrides any
+worktree, feature-branch, commit, merge, or push instructions contained in the
+implementation plan or Superpowers workflow**.
+
+This override applies only to Git/development workflow. It does not override
+the research semantics or implementation requirements defined in the approved
+design specification.
+
+### Working tree and branch policy
+
+- Work directly in the currently checked-out `main` working tree.
+- Before making changes, verify that the active branch is `main`.
+- Do **not** create Git worktrees for routine implementation work.
+- Do **not** create feature branches unless the human explicitly requests one.
+- Do **not** automatically switch branches.
+- Do **not** use `superpowers:using-git-worktrees` unless the human explicitly
+  requests isolated worktree development.
+- If the working tree contains existing human changes, preserve them.
+- Do not stash, reset, restore, checkout, overwrite, or discard unrelated
+  human changes.
+
+### Human-owned Git history
+
+Codex is responsible for implementation, testing, and review.
+
+The human is responsible for deciding what enters Git history and what is
+published to the remote repository.
+
+Therefore, unless explicitly requested by the human, Codex must **not**:
+
+- run `git add`,
+- create commits,
+- amend commits,
+- merge branches,
+- rebase branches,
+- push to any remote,
+- open pull requests,
+- create tags,
+- reset or discard working-tree changes.
+
+Completed implementation changes must remain **uncommitted in the `main`
+working tree** for human inspection.
+
+The intended workflow is:
+
+1. Codex modifies files directly on `main`.
+2. Codex runs the required tests and verification.
+3. Codex reviews the implementation for specification compliance and code
+   quality.
+4. Codex leaves all resulting changes uncommitted.
+5. The human inspects `git status` and `git diff`.
+6. The human manually performs `git add`, `git commit`, and `git push` when
+   satisfied.
+
+### Implementation workflow
+
+For M0–M4 implementation:
+
+1. Read the approved design specification and implementation plan in full.
+2. Treat the design specification as the highest-level research authority.
+3. Verify that the active branch is `main`.
+4. Inspect the existing working tree before editing.
+5. Execute implementation tasks in the approved order.
+6. Use fresh implementer subagents where required by the approved development
+   methodology, but all changes must target the same existing `main` working
+   tree.
+7. Follow TDD where specified:
+   failing test → minimal implementation → passing test.
+8. After each meaningful task, perform:
+   - specification-compliance review,
+   - code-quality review.
+9. Fix review findings before proceeding.
+10. Keep the implementation/progress ledger up to date where required.
+11. Do not commit individual tasks; leave cumulative changes in the working
+    tree.
+12. At milestone completion, run the required verification suite and summarize
+    the final diff for human review.
+
+If the implementation plan instructs Codex to create a worktree, create a
+feature branch, commit task-level changes, merge, or push, those Git-operation
+instructions are superseded by this section.
+
+### Completion report
+
+At the end of a task or milestone, report:
+
+1. files added,
+2. files modified,
+3. files deleted,
+4. tests and verification commands executed,
+5. test/verification results,
+6. remaining known issues or deviations,
+7. a concise suggested commit message.
+
+Do not create that commit. The human will decide whether and how to commit and
+push the changes.
 
 ## Core research guardrails
 
