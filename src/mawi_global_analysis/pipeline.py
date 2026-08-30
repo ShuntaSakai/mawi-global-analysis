@@ -18,8 +18,9 @@ import pandas as pd
 from mawi_global_analysis.aguri import inspect_aguri_cache, run_aguri_stage
 from mawi_global_analysis.config import ExperimentConfig, load_config
 from mawi_global_analysis.dataset import MawiDownloader, MawiResolver, resolve_local_input
+from mawi_global_analysis.flow import capture_start_timestamp
 from mawi_global_analysis.flow_stage import FLOW_COLUMNS, FLOW_SCHEMA_VERSION, run_flow_stage
-from mawi_global_analysis.hashing import flow_fingerprint, sha256_file
+from mawi_global_analysis.hashing import flow_fingerprint, sha256_file, stable_json_hash
 from mawi_global_analysis.manifests import RunManifest
 from mawi_global_analysis.membership import MEMBERSHIP_COLUMNS, build_membership
 from mawi_global_analysis.models import InputContext
@@ -28,6 +29,17 @@ from mawi_global_analysis.prefix import (
     LEGACY_OUTPUT_COLUMNS,
     run_corrected_prefix_stage,
     run_legacy_prefix_stage,
+)
+from mawi_global_analysis.scan_labels import (
+    FLOW_LABEL_COLUMNS,
+    build_pre_m5_flow_labels,
+    ensure_pre_m5_labels_allowed,
+)
+from mawi_global_analysis.scan_windows import (
+    SCAN_SUMMARY_COLUMNS,
+    SCAN_WINDOW_COLUMNS,
+    build_source_scan_summary,
+    build_source_scan_windows,
 )
 
 
@@ -42,18 +54,33 @@ STAGE_NAMES = (
     "manifest",
 )
 
-M0_M3_STAGES = ("input", "flows", "aguri", "prefixes", "membership")
+M0_M4_STAGES = (
+    "input",
+    "flows",
+    "aguri",
+    "scan-stats",
+    "scan-labels",
+    "prefixes",
+    "membership",
+)
+SCAN_STATS_SCHEMA_VERSION = "scan-stats-v2"
+SCAN_STATS_CAPTURE_ANCHOR = "raw_first_packet_timestamp"
+NEUTRAL_LABEL_SCHEMA_VERSION = "neutral-labels-v1"
 STAGE_DEPENDENCIES = {
     "input": (),
     "flows": ("input",),
     "aguri": ("input",),
+    "scan-stats": ("flows",),
+    "scan-labels": ("flows", "scan-stats"),
     "prefixes": ("aguri",),
     "membership": ("flows", "prefixes"),
 }
 FORCE_INVALIDATES = {
-    "input": frozenset(M0_M3_STAGES),
-    "flows": frozenset(("flows", "membership")),
+    "input": frozenset(M0_M4_STAGES),
+    "flows": frozenset(("flows", "scan-stats", "scan-labels", "membership")),
     "aguri": frozenset(("aguri", "prefixes", "membership")),
+    "scan-stats": frozenset(("scan-stats", "scan-labels")),
+    "scan-labels": frozenset(("scan-labels",)),
     "prefixes": frozenset(("prefixes", "membership")),
     "membership": frozenset(("membership",)),
 }
@@ -61,12 +88,16 @@ LEGACY_STAGE_DEPENDENCIES = {
     "input": (),
     "flows": ("input",),
     "aguri": ("input",),
+    "scan-stats": ("flows",),
+    "scan-labels": ("flows", "scan-stats"),
     "prefixes": ("flows", "aguri"),
 }
 LEGACY_FORCE_INVALIDATES = {
-    "input": frozenset(("input", "flows", "aguri", "prefixes")),
-    "flows": frozenset(("flows", "prefixes")),
+    "input": frozenset(("input", "flows", "aguri", "scan-stats", "scan-labels", "prefixes")),
+    "flows": frozenset(("flows", "scan-stats", "scan-labels", "prefixes")),
     "aguri": frozenset(("aguri", "prefixes")),
+    "scan-stats": frozenset(("scan-stats", "scan-labels")),
+    "scan-labels": frozenset(("scan-labels",)),
     "prefixes": frozenset(("prefixes",)),
 }
 
@@ -79,16 +110,15 @@ class MissingUpstreamArtifactError(FileNotFoundError):
     """Raised when a partial run excludes an artifact it needs."""
 
 
-class UnsupportedStageError(ValueError):
-    """Raised for CLI-visible stages intentionally deferred past M3."""
-
-
 @dataclass(frozen=True)
 class RunPaths:
     """Run-specific output locations, kept separate from dataset caches."""
 
     run_dir: Path
     manifest: Path
+    scan_windows: Path
+    scan_summary: Path
+    labels: Path
     prefixes: Path
     membership: Path
 
@@ -111,7 +141,7 @@ def run_legacy_prefixes(
 
 
 def run_pipeline(args: argparse.Namespace) -> int:
-    """Execute the implemented M0--M3 DAG or print a non-mutating plan.
+    """Execute the implemented M0--M4 DAG or print a non-mutating plan.
 
     Stage relationships are defined by ``STAGE_DEPENDENCIES``.  This keeps
     partial execution strict: an omitted dependency must already exist rather
@@ -125,6 +155,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     selected_stages = _selected_stages(args, config)
     forced_stages = _forced_stages(args.force, config)
     _ensure_forced_stages_are_selected(forced_stages, selected_stages)
+    ensure_pre_m5_labels_allowed(config)
 
     provisional_paths = _provisional_run_paths(args, run_name)
     manifest: RunManifest | None = None
@@ -168,6 +199,13 @@ def run_pipeline(args: argparse.Namespace) -> int:
         raise
 
     if args.dry_run:
+        dry_run_artifacts = _existing_artifacts(existing, config, context)
+        _add_valid_dataset_cache_artifacts(dry_run_artifacts, context, config)
+        for stage in selected_stages:
+            if stage != "input":
+                _require_omitted_dependencies(
+                    stage, selected_stages, dry_run_artifacts, config
+                )
         for stage, decision in _planned_decisions(
             selected_stages, forced_stages, context, config, paths, existing
         ):
@@ -188,9 +226,10 @@ def run_pipeline(args: argparse.Namespace) -> int:
             )
         )
         manifest.record_stage("input", "running")
-    artifacts = _existing_artifacts(existing, config)
+    artifacts = _existing_artifacts(existing, config, context)
     _add_valid_dataset_cache_artifacts(artifacts, context, config)
     current_stage = "input"
+    effective_forced_stages = set(forced_stages)
     try:
         manifest.set_input(context.path, context.sha256, context.size_bytes)
         manifest.record_stage("input", input_resolution.stage_status)
@@ -204,7 +243,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             _require_omitted_dependencies(stage, selected_stages, artifacts, config)
             manifest.record_stage(stage, "running")
             if stage == "flows":
-                forced = stage in forced_stages
+                forced = stage in effective_forced_stages
                 flow_cache = _inspect_flow_cache(context, config)
                 was_cached = flow_cache[0] and not forced
                 flows_path = run_flow_stage(context, config, force=forced)
@@ -238,6 +277,53 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     "aguri_candidates", aguri_path, _csv_row_count(aguri_path)
                 )
                 _record_aguri_cache(manifest, aguri_path)
+            elif stage == "scan-stats":
+                if stage in effective_forced_stages or not _valid_scan_stats_artifacts(
+                    paths, existing, context, config
+                ):
+                    _write_scan_statistics(
+                        artifacts["flows"],
+                        context.dataset_id,
+                        config,
+                        context.path,
+                        paths.scan_windows,
+                        paths.scan_summary,
+                    )
+                    stage_status = "completed"
+                    effective_forced_stages.add("scan-labels")
+                else:
+                    stage_status = "reused"
+                artifacts["scan-stats"] = paths.scan_windows
+                manifest.record_stage("scan-stats", stage_status)
+                manifest.record_artifact(
+                    "source_scan_windows",
+                    paths.scan_windows,
+                    _csv_row_count(paths.scan_windows),
+                )
+                manifest.record_artifact(
+                    "source_scan_summary",
+                    paths.scan_summary,
+                    _csv_row_count(paths.scan_summary),
+                )
+                manifest.record_cache(
+                    "scan-stats", _scan_stats_cache_metadata(context, config)
+                )
+            elif stage == "scan-labels":
+                if stage in effective_forced_stages or not _valid_neutral_label_artifact(
+                    paths.labels, existing, artifacts["flows"], context, config
+                ):
+                    _write_pre_m5_labels(artifacts["flows"], config, paths.labels)
+                    stage_status = "completed"
+                else:
+                    stage_status = "reused"
+                artifacts["scan-labels"] = paths.labels
+                manifest.record_stage("scan-labels", stage_status)
+                manifest.record_artifact(
+                    "flow_labels", paths.labels, _csv_row_count(paths.labels)
+                )
+                manifest.record_cache(
+                    "scan-labels", _neutral_label_cache_metadata(context, config)
+                )
             elif stage == "prefixes":
                 if stage in forced_stages or not _valid_run_artifact(
                     paths.prefixes, existing, "prefixes", config
@@ -285,26 +371,24 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
 
 def _selected_stages(args: argparse.Namespace, config: ExperimentConfig) -> tuple[str, ...]:
-    """Convert an inclusive CLI range to the M0--M3 stages it authorizes."""
+    """Convert an inclusive CLI range to the M0--M4 stages it authorizes."""
     from_stage = args.from_stage or "input"
     to_stage = args.to_stage or ("prefixes" if _is_legacy(config) else "membership")
-    unsupported = {from_stage, to_stage} & {"scan-stats", "scan-labels"}
-    if unsupported:
-        names = ", ".join(sorted(unsupported))
-        raise UnsupportedStageError(f"Task 11 implements M0--M3 only; deferred: {names}")
     if to_stage == "manifest":
-        to_stage = "membership"
+        to_stage = "prefixes" if _is_legacy(config) else "membership"
     if from_stage == "manifest":
-        raise UnsupportedStageError("manifest is finalized by M0--M3 runs, not executable")
-    start = M0_M3_STAGES.index(from_stage)
-    end = M0_M3_STAGES.index(to_stage)
+        raise ValueError("manifest is finalized by M0--M4 runs, not executable")
+    stages = _pipeline_stages(config)
+    if from_stage not in stages or to_stage not in stages:
+        raise ValueError(
+            f"{config.experiment.name} does not implement requested stage range "
+            f"{from_stage!r} to {to_stage!r}"
+        )
+    start = stages.index(from_stage)
+    end = stages.index(to_stage)
     if start > end:
         raise ValueError("--from must not follow --to")
-    selected = M0_M3_STAGES[start : end + 1]
-    if _is_legacy(config) and "membership" in selected:
-        raise UnsupportedStageError(
-            "paper_legacy has no corrected flow-prefix membership stage"
-        )
+    selected = stages[start : end + 1]
     return selected
 
 
@@ -314,19 +398,19 @@ def _forced_stages(
     """Apply force invalidation from the explicit stage dependency table."""
     values = set(forced or ())
     available_stages = (
-        ("input", "flows", "aguri", "prefixes") if _is_legacy(config) else M0_M3_STAGES
+        _pipeline_stages(config)
     )
     invalidation = LEGACY_FORCE_INVALIDATES if _is_legacy(config) else FORCE_INVALIDATES
     if "all" in values:
         return frozenset(available_stages)
-    unsupported = values & {"scan-stats", "scan-labels", "manifest"}
+    unsupported = values & {"manifest"}
     if unsupported:
         names = ", ".join(sorted(unsupported))
-        raise UnsupportedStageError(f"Task 11 cannot force deferred stage(s): {names}")
+        raise ValueError(f"manifest cannot be forced as an executable stage: {names}")
     invalidated: set[str] = set()
     for stage in values:
         if stage not in invalidation:
-            raise UnsupportedStageError(f"Task 11 cannot force stage: {stage}")
+            raise ValueError(f"cannot force stage: {stage}")
         invalidated.update(invalidation[stage])
     return frozenset(invalidated)
 
@@ -361,6 +445,9 @@ def _run_paths(dataset_id: str, run_name: str) -> RunPaths:
     return RunPaths(
         run_dir=run_dir,
         manifest=run_dir / "run_manifest.json",
+        scan_windows=run_dir / "source_scan_windows.csv",
+        scan_summary=run_dir / "source_scan_summary.csv",
+        labels=run_dir / "flow_labels.csv",
         prefixes=run_dir / "prefixes.csv",
         membership=run_dir / "flow_prefix_membership.csv",
     )
@@ -420,6 +507,12 @@ def _is_legacy(config: ExperimentConfig) -> bool:
     return config.experiment.name == "paper_legacy"
 
 
+def _pipeline_stages(config: ExperimentConfig) -> tuple[str, ...]:
+    if _is_legacy(config):
+        return ("input", "flows", "aguri", "scan-stats", "scan-labels", "prefixes")
+    return M0_M4_STAGES
+
+
 def _stage_dependencies(config: ExperimentConfig) -> dict[str, tuple[str, ...]]:
     return LEGACY_STAGE_DEPENDENCIES if _is_legacy(config) else STAGE_DEPENDENCIES
 
@@ -435,12 +528,21 @@ def _ensure_forced_stages_are_selected(
 
 
 def _existing_artifacts(
-    existing: dict[str, Any] | None, config: ExperimentConfig
+    existing: dict[str, Any] | None,
+    config: ExperimentConfig,
+    context: InputContext | None = None,
 ) -> dict[str, Path]:
     if existing is None:
         return {}
     artifacts: dict[str, Path] = {}
+    flow_artifact = ((existing.get("artifacts") or {}).get("flows") or {})
+    flow_path = flow_artifact.get("path")
+    if isinstance(flow_path, str) and _valid_csv_artifact(
+        Path(flow_path), flow_artifact.get("row_count"), FLOW_COLUMNS
+    ):
+        artifacts["flows"] = Path(flow_path)
     for manifest_name, stage_name in (
+        ("flow_labels", "scan-labels"),
         ("prefixes", "prefixes"),
         ("flow_prefix_membership", "membership"),
     ):
@@ -450,6 +552,14 @@ def _existing_artifacts(
             Path(path), artifact.get("row_count"), _run_artifact_columns(stage_name, config)
         ):
             artifacts[stage_name] = Path(path)
+    if context is not None and _valid_scan_stats_artifacts_from_manifest(
+        existing, context, config
+    ):
+        windows_path = ((existing.get("artifacts") or {}).get("source_scan_windows") or {}).get(
+            "path"
+        )
+        assert isinstance(windows_path, str)
+        artifacts["scan-stats"] = Path(windows_path)
     return artifacts
 
 
@@ -490,27 +600,47 @@ def _planned_decisions(
     existing: dict[str, Any] | None,
 ) -> list[tuple[str, str]]:
     """Return non-mutating execute/reuse decisions for a local dry-run."""
-    existing_artifacts = _existing_artifacts(existing, config)
+    existing_artifacts = _existing_artifacts(existing, config, context)
     _add_valid_dataset_cache_artifacts(existing_artifacts, context, config)
     decisions: list[tuple[str, str]] = []
+    effective_forced = set(forced)
     for stage in selected:
         if stage == "input":
             decision = "reuse" if context.sha256 else "execute"
         elif stage == "flows":
-            decision = "reuse" if stage not in forced and "flows" in existing_artifacts else "execute"
+            decision = "reuse" if stage not in effective_forced and "flows" in existing_artifacts else "execute"
         elif stage == "aguri":
-            decision = "reuse" if stage not in forced and "aguri" in existing_artifacts else "execute"
+            decision = "reuse" if stage not in effective_forced and "aguri" in existing_artifacts else "execute"
+        elif stage == "scan-stats":
+            decision = (
+                "reuse"
+                if stage not in effective_forced
+                and _valid_scan_stats_artifacts(paths, existing, context, config)
+                else "execute"
+            )
+            if decision == "execute":
+                effective_forced.add("scan-labels")
+        elif stage == "scan-labels":
+            decision = (
+                "reuse"
+                if stage not in effective_forced
+                and (flows_path := existing_artifacts.get("flows")) is not None
+                and _valid_neutral_label_artifact(
+                    paths.labels, existing, flows_path, context, config
+                )
+                else "execute"
+            )
         elif stage == "prefixes":
             decision = (
                 "reuse"
-                if stage not in forced
+                if stage not in effective_forced
                 and _valid_run_artifact(paths.prefixes, existing, "prefixes", config)
                 else "execute"
             )
         else:
             decision = (
                 "reuse"
-                if stage not in forced
+                if stage not in effective_forced
                 and _valid_run_artifact(paths.membership, existing, "membership", config)
                 else "execute"
             )
@@ -579,6 +709,8 @@ def _record_aguri_cache(manifest: RunManifest, candidates_path: Path) -> None:
 
 
 def _run_artifact_columns(stage: str, config: ExperimentConfig) -> tuple[str, ...]:
+    if stage == "scan-labels":
+        return FLOW_LABEL_COLUMNS
     if stage == "prefixes":
         return LEGACY_OUTPUT_COLUMNS if _is_legacy(config) else CORRECTED_LEDGER_COLUMNS
     if stage == "membership":
@@ -592,7 +724,11 @@ def _valid_run_artifact(
     stage: str,
     config: ExperimentConfig,
 ) -> bool:
-    artifact_name = "prefixes" if stage == "prefixes" else "flow_prefix_membership"
+    artifact_name = {
+        "scan-labels": "flow_labels",
+        "prefixes": "prefixes",
+        "membership": "flow_prefix_membership",
+    }[stage]
     artifact = ((existing or {}).get("artifacts") or {}).get(artifact_name) or {}
     return _valid_csv_artifact(
         path, artifact.get("row_count"), _run_artifact_columns(stage, config)
@@ -636,6 +772,160 @@ def _write_membership(flows_path: Path, prefixes_path: Path, output_path: Path) 
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
+
+
+def _write_scan_statistics(
+    flows_path: Path,
+    dataset_id: str,
+    config: ExperimentConfig,
+    capture_path: Path,
+    windows_path: Path,
+    summary_path: Path,
+) -> None:
+    flows = pd.read_csv(flows_path)
+    capture_start = capture_start_timestamp(capture_path)
+    if capture_start is None:
+        capture_start = 0.0
+    windows = build_source_scan_windows(
+        flows,
+        dataset_id,
+        config.scan.window_size_seconds,
+        config.scan.window_step_seconds,
+        capture_start,
+    )
+    summary = build_source_scan_summary(flows, dataset_id)
+    _write_dataframe_atomically(windows, windows_path)
+    _write_dataframe_atomically(summary, summary_path)
+
+
+def _write_pre_m5_labels(
+    flows_path: Path, config: ExperimentConfig, output_path: Path
+) -> None:
+    _write_dataframe_atomically(
+        build_pre_m5_flow_labels(pd.read_csv(flows_path), config), output_path
+    )
+
+
+def _valid_neutral_label_artifact(
+    path: Path,
+    existing: dict[str, Any] | None,
+    flows_path: Path,
+    context: InputContext,
+    config: ExperimentConfig,
+) -> bool:
+    artifact = ((existing or {}).get("artifacts") or {}).get("flow_labels") or {}
+    if (existing or {}).get("cache", {}).get(
+        "scan-labels"
+    ) != _neutral_label_cache_metadata(context, config) or not _valid_csv_artifact(
+        path, artifact.get("row_count"), FLOW_LABEL_COLUMNS
+    ):
+        return False
+    try:
+        labels = pd.read_csv(path)
+        flows = pd.read_csv(flows_path, usecols=["flow_id"])
+    except (OSError, ValueError, pd.errors.ParserError):
+        return False
+    if labels["flow_id"].duplicated().any() or flows["flow_id"].duplicated().any():
+        return False
+    if set(labels["flow_id"].tolist()) != set(flows["flow_id"].tolist()):
+        return False
+    return labels.loc[:, FLOW_LABEL_COLUMNS[1:]].eq(False).all().all()
+
+
+def _write_dataframe_atomically(frame: pd.DataFrame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as output:
+            temporary_path = Path(output.name)
+            frame.to_csv(output, index=False)
+            output.flush()
+            os.fsync(output.fileno())
+        temporary_path.replace(output_path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _scan_stats_cache_metadata(
+    context: InputContext, config: ExperimentConfig
+) -> dict[str, str]:
+    return {
+        "schema_version": SCAN_STATS_SCHEMA_VERSION,
+        "capture_anchor": SCAN_STATS_CAPTURE_ANCHOR,
+        "fingerprint": stable_json_hash(
+            {
+                "schema_version": SCAN_STATS_SCHEMA_VERSION,
+                "capture_anchor": SCAN_STATS_CAPTURE_ANCHOR,
+                "input_sha256": context.sha256,
+                "flow_fingerprint": flow_fingerprint(
+                    context.sha256, config, FLOW_SCHEMA_VERSION
+                ),
+                "window": {
+                    "size_seconds": config.scan.window_size_seconds,
+                    "step_seconds": config.scan.window_step_seconds,
+                    "anchor": config.scan.window_anchor,
+                    "membership": config.scan.window_membership,
+                },
+            }
+        ),
+    }
+
+
+def _neutral_label_cache_metadata(
+    context: InputContext, config: ExperimentConfig
+) -> dict[str, str]:
+    scan_stats = _scan_stats_cache_metadata(context, config)
+    return {
+        "schema_version": NEUTRAL_LABEL_SCHEMA_VERSION,
+        "scan_stats_schema_version": scan_stats["schema_version"],
+        "scan_stats_fingerprint": scan_stats["fingerprint"],
+    }
+
+
+def _valid_scan_stats_artifacts(
+    paths: RunPaths,
+    existing: dict[str, Any] | None,
+    context: InputContext,
+    config: ExperimentConfig,
+) -> bool:
+    artifacts = (existing or {}).get("artifacts") or {}
+    windows = artifacts.get("source_scan_windows") or {}
+    summary = artifacts.get("source_scan_summary") or {}
+    cache = (existing or {}).get("cache") or {}
+    return cache.get("scan-stats") == _scan_stats_cache_metadata(
+        context, config
+    ) and _valid_csv_artifact(
+        paths.scan_windows, windows.get("row_count"), SCAN_WINDOW_COLUMNS
+    ) and _valid_csv_artifact(
+        paths.scan_summary, summary.get("row_count"), SCAN_SUMMARY_COLUMNS
+    )
+
+
+def _valid_scan_stats_artifacts_from_manifest(
+    existing: dict[str, Any], context: InputContext, config: ExperimentConfig
+) -> bool:
+    artifacts = existing.get("artifacts") or {}
+    windows = artifacts.get("source_scan_windows") or {}
+    summary = artifacts.get("source_scan_summary") or {}
+    windows_path = windows.get("path")
+    summary_path = summary.get("path")
+    return (
+        isinstance(windows_path, str)
+        and isinstance(summary_path, str)
+        and (existing.get("cache") or {}).get("scan-stats")
+        == _scan_stats_cache_metadata(context, config)
+        and _valid_csv_artifact(Path(windows_path), windows.get("row_count"), SCAN_WINDOW_COLUMNS)
+        and _valid_csv_artifact(Path(summary_path), summary.get("row_count"), SCAN_SUMMARY_COLUMNS)
+    )
 
 
 def _csv_row_count(path: Path) -> int:
