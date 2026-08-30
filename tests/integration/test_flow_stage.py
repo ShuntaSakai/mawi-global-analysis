@@ -52,7 +52,7 @@ def test_flow_stage_reuses_semantic_cache_and_records_canonical_provenance(
         "inactive_timeout_seconds": None,
         "protocols": ["tcp", "udp"],
     }
-    assert manifest["schema_version"] == "flows-v1"
+    assert manifest["schema_version"] == "flows-v2"
 
     with first_path.open(newline="") as csv_file:
         rows = list(csv.DictReader(csv_file))

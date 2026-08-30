@@ -4,6 +4,8 @@ import argparse
 from pathlib import Path
 
 from mawi_global_analysis.flow_stage import run_flow_stage
+from mawi_global_analysis.config import load_config
+from mawi_global_analysis.prefix import run_legacy_prefix_stage
 
 
 STAGE_NAMES = (
@@ -16,6 +18,15 @@ STAGE_NAMES = (
     "membership",
     "manifest",
 )
+
+
+def run_legacy_prefixes(
+    flows_path: Path, aguri_path: Path, config_path: Path, output_path: Path
+) -> Path:
+    """Execute the paper-legacy prefixes stage from its upstream CSV artifacts."""
+    return run_legacy_prefix_stage(
+        flows_path, aguri_path, load_config(config_path), output_path
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

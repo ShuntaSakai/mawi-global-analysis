@@ -66,6 +66,26 @@ def test_tcp_control_facts_classify_only_ordered_observed_patterns() -> None:
     assert classify_observed_tcp_pattern(syn_only) == "syn_only_observed"
 
 
+def test_tcp_flag_totals_preserve_the_legacy_selection_inputs() -> None:
+    """Legacy selection needs packet-level flag totals, not inferred roles."""
+    syn_to_rst = _flow_for_destination_port(80)
+    syn_synack_rst = _flow_for_destination_port(443)
+    established_payload = _flow_for_destination_port(8080)
+    syn_only = _flow_for_destination_port(22)
+
+    assert syn_to_rst["syn_count"] == 1
+    assert syn_to_rst["syn_ack_count"] == 0
+    assert syn_to_rst["ack_count"] == 1
+    assert syn_to_rst["rst_count"] == 1
+    assert syn_synack_rst["syn_count"] == 2
+    assert syn_synack_rst["syn_ack_count"] == 1
+    assert syn_synack_rst["ack_count"] == 2
+    assert syn_synack_rst["rst_count"] == 1
+    assert established_payload["ack_count"] >= 2
+    assert syn_only["syn_count"] == 1
+    assert syn_only["ack_count"] == 0
+
+
 def test_udp_keeps_byte_metrics_without_tcp_control_facts() -> None:
     """A UDP payload is not an observed TCP establishment fact."""
     udp_flow = next(

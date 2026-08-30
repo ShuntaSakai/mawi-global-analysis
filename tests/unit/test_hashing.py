@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from mawi_global_analysis.config import load_config
+from mawi_global_analysis.flow_stage import FLOW_SCHEMA_VERSION
 from mawi_global_analysis.hashing import flow_fingerprint, stable_json_hash
 
 
@@ -42,3 +43,13 @@ def test_flow_fingerprint_tracks_flow_generation_but_not_scan_settings() -> None
     assert flow_fingerprint("a" * 64, changed_scan) == baseline_fingerprint
     assert flow_fingerprint("a" * 64, changed_timeout) != baseline_fingerprint
     assert flow_fingerprint("a" * 64, tcp_only) != baseline_fingerprint
+
+
+def test_flow_schema_version_bumps_when_canonical_columns_change() -> None:
+    """Legacy TCP flag totals are canonical facts and must invalidate old caches."""
+    baseline = load_config(ROOT / "configs" / "baseline.yaml")
+
+    assert FLOW_SCHEMA_VERSION == "flows-v2"
+    assert flow_fingerprint("a" * 64, baseline, "flows-v1") != flow_fingerprint(
+        "a" * 64, baseline, "flows-v2"
+    )

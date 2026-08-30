@@ -103,6 +103,10 @@ class _FlowAccumulator:
     ack_after_synack_observed: bool = False
     non_syn_response_observed: bool = False
     transport_payload_observed: bool = False
+    syn_count: int = 0
+    syn_ack_count: int = 0
+    ack_count: int = 0
+    rst_count: int = 0
 
     def add_packet(
         self,
@@ -137,6 +141,14 @@ class _FlowAccumulator:
         is_plain_syn = bool(tcp_flags & dpkt.tcp.TH_SYN) and not bool(
             tcp_flags & dpkt.tcp.TH_ACK
         )
+        if tcp_flags & dpkt.tcp.TH_SYN:
+            self.syn_count += 1
+        if tcp_flags & dpkt.tcp.TH_SYN and tcp_flags & dpkt.tcp.TH_ACK:
+            self.syn_ack_count += 1
+        if tcp_flags & dpkt.tcp.TH_ACK:
+            self.ack_count += 1
+        if tcp_flags & dpkt.tcp.TH_RST:
+            self.rst_count += 1
         if self.initial_syn_sender_ip is None:
             if not is_plain_syn:
                 return
@@ -229,6 +241,10 @@ class _FlowAccumulator:
             "ack_after_synack_observed": self.ack_after_synack_observed,
             "non_syn_response_observed": self.non_syn_response_observed,
             "transport_payload_observed": self.transport_payload_observed,
+            "syn_count": self.syn_count,
+            "syn_ack_count": self.syn_ack_count,
+            "ack_count": self.ack_count,
+            "rst_count": self.rst_count,
         }
 
 

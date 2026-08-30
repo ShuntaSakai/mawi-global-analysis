@@ -27,12 +27,40 @@ def test_baseline_config_preserves_corrected_defaults() -> None:
     assert config.analysis.overall_ip_scope == "ipv4"
 
 
-def test_legacy_prefix_and_overall_ip_scopes_are_independent() -> None:
-    """Legacy prefix selection stays IPv4 while overall traffic includes both versions."""
+def test_legacy_scope_matches_the_verified_old_result_artifacts() -> None:
+    """The legacy block explicitly preserves the old IPv4-and-IPv6 candidate scope."""
     config = load_config(ROOT / "configs" / "paper_legacy.yaml")
 
-    assert config.prefix.ip_version == 4
+    assert config.legacy is not None
+    assert config.legacy.candidate_ip_scope == "ipv4_ipv6"
     assert config.analysis.overall_ip_scope == "ipv4_ipv6"
+
+
+def test_paper_legacy_config_encodes_the_verified_old_selection_contract() -> None:
+    """The legacy-only block freezes the old result-generation parameters."""
+    config = load_config(ROOT / "configs" / "paper_legacy.yaml")
+
+    assert config.legacy is not None
+    assert config.legacy.prefix_len == 24
+    assert config.legacy.min_flows == 100
+    assert config.legacy.min_packets == 1000
+    assert config.legacy.min_bytes == 100000
+    assert config.legacy.max_short_flow_ratio == 0.8
+    assert config.legacy.max_tiny_flow_ratio == 0.8
+    assert config.legacy.max_syn_only_like_ratio == 0.5
+    assert config.legacy.max_rst_observed_ratio == 0.8
+    assert config.legacy.short_duration_threshold == 1.0
+    assert config.legacy.tiny_packet_threshold == 3
+    assert config.legacy.top_k == 10
+    assert config.legacy.plot_min_flow_count == 1000
+    assert config.legacy.score_weights.model_dump() == {
+        "flow_count": 0.20,
+        "packet_count": 0.20,
+        "byte_count": 0.20,
+        "low_short_flow_ratio": 0.15,
+        "low_tiny_flow_ratio": 0.15,
+        "low_syn_only_like_ratio": 0.10,
+    }
 
 
 @pytest.mark.parametrize(

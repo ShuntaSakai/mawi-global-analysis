@@ -16,7 +16,7 @@ from mawi_global_analysis.models import InputContext
 from mawi_global_analysis.scan_patterns import classify_observed_tcp_pattern
 
 
-FLOW_SCHEMA_VERSION = "flows-v1"
+FLOW_SCHEMA_VERSION = "flows-v2"
 FLOW_COLUMNS = (
     "flow_id",
     "ip_version",
@@ -54,6 +54,10 @@ FLOW_COLUMNS = (
     "ack_after_synack_observed",
     "non_syn_response_observed",
     "transport_payload_observed",
+    "syn_count",
+    "syn_ack_count",
+    "ack_count",
+    "rst_count",
     "observed_tcp_pattern",
 )
 _PROTOCOL_NUMBERS = {"tcp": 6, "udp": 17}

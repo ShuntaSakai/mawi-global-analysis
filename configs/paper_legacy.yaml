@@ -27,3 +27,24 @@ aguri:
   options: []
 analysis:
   overall_ip_scope: ipv4_ipv6
+legacy:
+  candidate_ip_scope: ipv4_ipv6
+  prefix_len: 24
+  min_flows: 100
+  min_packets: 1000
+  min_bytes: 100000
+  max_short_flow_ratio: 0.8
+  max_tiny_flow_ratio: 0.8
+  max_syn_only_like_ratio: 0.5
+  max_rst_observed_ratio: 0.8
+  short_duration_threshold: 1.0
+  tiny_packet_threshold: 3
+  top_k: 10
+  score_weights:
+    flow_count: 0.20
+    packet_count: 0.20
+    byte_count: 0.20
+    low_short_flow_ratio: 0.15
+    low_tiny_flow_ratio: 0.15
+    low_syn_only_like_ratio: 0.10
+  plot_min_flow_count: 1000

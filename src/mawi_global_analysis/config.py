@@ -96,6 +96,38 @@ class AnalysisConfig(StrictModel):
     overall_ip_scope: Literal["ipv4", "ipv6", "ipv4_ipv6"]
 
 
+class LegacyScoreWeights(StrictModel):
+    flow_count: float = Field(ge=0)
+    packet_count: float = Field(ge=0)
+    byte_count: float = Field(ge=0)
+    low_short_flow_ratio: float = Field(ge=0)
+    low_tiny_flow_ratio: float = Field(ge=0)
+    low_syn_only_like_ratio: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def require_unit_weight_sum(self) -> "LegacyScoreWeights":
+        if abs(sum(self.model_dump().values()) - 1.0) > 1e-9:
+            raise ValueError("legacy score weights must sum to 1.0")
+        return self
+
+
+class LegacyConfig(StrictModel):
+    candidate_ip_scope: Literal["ipv4_ipv6"]
+    prefix_len: int = Field(ge=0, le=128)
+    min_flows: int = Field(ge=0)
+    min_packets: int = Field(ge=0)
+    min_bytes: int = Field(ge=0)
+    max_short_flow_ratio: float = Field(ge=0, le=1)
+    max_tiny_flow_ratio: float = Field(ge=0, le=1)
+    max_syn_only_like_ratio: float = Field(ge=0, le=1)
+    max_rst_observed_ratio: float = Field(ge=0, le=1)
+    short_duration_threshold: float = Field(ge=0)
+    tiny_packet_threshold: int = Field(ge=0)
+    top_k: int = Field(gt=0)
+    score_weights: LegacyScoreWeights
+    plot_min_flow_count: int = Field(ge=0)
+
+
 class ExperimentConfig(StrictModel):
     experiment: ExperimentMetadataConfig
     flow: FlowConfig
@@ -103,6 +135,15 @@ class ExperimentConfig(StrictModel):
     scan: ScanConfig
     aguri: AguriConfig
     analysis: AnalysisConfig
+    legacy: LegacyConfig | None = None
+
+    @model_validator(mode="after")
+    def restrict_legacy_block_to_legacy_experiment(self) -> "ExperimentConfig":
+        if self.experiment.name == "paper_legacy" and self.legacy is None:
+            raise ValueError("paper_legacy requires a legacy configuration block")
+        if self.experiment.name != "paper_legacy" and self.legacy is not None:
+            raise ValueError("legacy configuration is reserved for paper_legacy")
+        return self
 
 
 def load_config(path: Path) -> ExperimentConfig:
