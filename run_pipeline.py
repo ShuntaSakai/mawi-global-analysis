@@ -2,13 +2,12 @@
 
 from collections.abc import Sequence
 
-from mawi_global_analysis.pipeline import build_parser
+from mawi_global_analysis.pipeline import build_parser, run_pipeline
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Validate the shared CLI contract; stage execution is added incrementally."""
-    build_parser().parse_args(argv)
-    return 0
+    """Parse command-line arguments and delegate to the package orchestrator."""
+    return run_pipeline(build_parser().parse_args(argv))
 
 
 if __name__ == "__main__":

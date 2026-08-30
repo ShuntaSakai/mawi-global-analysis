@@ -45,11 +45,59 @@ class RunManifest:
                 "input": None,
                 "stages": [],
                 "artifacts": {},
+                "cache": {},
+                "invocations": [
+                    {
+                        "started_at": now,
+                        "finished_at": None,
+                        "git_commit": git_commit,
+                        "status": "running",
+                        "error": None,
+                    }
+                ],
                 "started_at": now,
                 "updated_at": now,
                 "finished_at": None,
                 "error": None,
             },
+        )
+        manifest._write()
+        return manifest
+
+    @classmethod
+    def resume(cls, path: Path, git_commit: str | None) -> "RunManifest":
+        """Reopen an identity-checked manifest while retaining its prior evidence."""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"unreadable run manifest: {path}") from error
+        manifest = cls(path, data)
+        manifest.data.setdefault("cache", {})
+        manifest.data.setdefault(
+            "invocations",
+            [
+                {
+                    "started_at": manifest.data.get("started_at"),
+                    "finished_at": manifest.data.get("finished_at"),
+                    "git_commit": manifest.data.get("git_commit"),
+                    "status": manifest.data.get("status"),
+                    "error": manifest.data.get("error"),
+                }
+            ],
+        )
+        now = _timestamp()
+        manifest.data["status"] = "running"
+        manifest.data["error"] = None
+        manifest.data["finished_at"] = None
+        manifest.data["git_commit"] = git_commit
+        manifest.data["invocations"].append(
+            {
+                "started_at": now,
+                "finished_at": None,
+                "git_commit": git_commit,
+                "status": "running",
+                "error": None,
+            }
         )
         manifest._write()
         return manifest
@@ -75,6 +123,11 @@ class RunManifest:
         self.data["artifacts"][name] = artifact
         self._write()
 
+    def record_cache(self, name: str, details: dict[str, Any]) -> None:
+        """Record the semantic cache identity used by a pipeline stage."""
+        self.data.setdefault("cache", {})[name] = details
+        self._write()
+
     def finalize_success(self) -> None:
         """Mark the run as successful and persist its completion time."""
         self._finalize("success", error=None)
@@ -90,6 +143,15 @@ class RunManifest:
         self.data["status"] = status
         self.data["error"] = error
         self.data["finished_at"] = _timestamp()
+        invocations = self.data.get("invocations")
+        if invocations:
+            invocations[-1].update(
+                {
+                    "status": status,
+                    "error": error,
+                    "finished_at": self.data["finished_at"],
+                }
+            )
         self._write()
 
     def _write(self) -> None:

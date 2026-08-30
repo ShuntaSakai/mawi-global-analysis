@@ -82,6 +82,16 @@ class AguriCacheValidationError(ValueError):
     """Raised when an Aguri cache cannot prove its semantic identity."""
 
 
+@dataclass(frozen=True)
+class AguriCacheInspection:
+    """The semantic identity and validation state of one Aguri cache location."""
+
+    candidates_path: Path
+    manifest_path: Path
+    fingerprint: str
+    valid: bool
+
+
 def resolve_aguri_binaries(
     config: _AguriConfigLike, *, root: Path | None = None
 ) -> AguriBinaries:
@@ -227,31 +237,15 @@ def run_aguri_stage(
     root: Path | None = None,
 ) -> Path:
     """Run pinned Aguri once and cache portable parsed aggregate candidates."""
-    repository_root = (root or Path.cwd()).resolve()
-    binaries = resolve_aguri_binaries(cfg.aguri, root=repository_root)
-    executable_checksums = {
-        "aguri3": sha256_file(binaries.aguri3),
-        "agurim": sha256_file(binaries.agurim),
-    }
-    fingerprint = stable_json_hash(
-        {
-            "schema_version": AGURI_SCHEMA_VERSION,
-            "input_sha256": ctx.sha256,
-            "agurim_submodule_sha": PINNED_AGURIM_SHA,
-            "executable_sha256": executable_checksums,
-            "options": cfg.aguri.options,
-        }
-    )
-    stage_dir = (
-        repository_root
-        / "data"
-        / ctx.dataset_id
-        / "processed"
-        / "aguri"
-        / fingerprint
-    )
-    candidates_path = stage_dir / "aguri_candidates.csv"
-    manifest_path = stage_dir / "aguri_manifest.json"
+    (
+        repository_root,
+        binaries,
+        executable_checksums,
+        fingerprint,
+        stage_dir,
+        candidates_path,
+        manifest_path,
+    ) = _aguri_cache_identity(ctx, cfg, root=root)
     if not force and (candidates_path.exists() or manifest_path.exists()):
         if not candidates_path.exists() or not manifest_path.exists():
             raise AguriCacheValidationError(
@@ -321,6 +315,82 @@ def run_aguri_stage(
         },
     )
     return candidates_path
+
+
+def inspect_aguri_cache(
+    ctx: InputContext, cfg: ExperimentConfig, *, root: Path | None = None
+) -> AguriCacheInspection:
+    """Inspect a semantic Aguri cache without invoking Aguri or mutating files."""
+    (
+        _repository_root,
+        _binaries,
+        executable_checksums,
+        fingerprint,
+        stage_dir,
+        candidates_path,
+        manifest_path,
+    ) = _aguri_cache_identity(ctx, cfg, root=root)
+    if not candidates_path.exists() and not manifest_path.exists():
+        return AguriCacheInspection(candidates_path, manifest_path, fingerprint, False)
+    try:
+        _validate_aguri_cache(
+            manifest_path,
+            candidates_path,
+            raw_path=stage_dir / "raw.agr",
+            rendered_path=stage_dir / "raw.agurim.txt",
+            input_sha256=ctx.sha256,
+            fingerprint=fingerprint,
+            executable_checksums=executable_checksums,
+            options=cfg.aguri.options,
+        )
+    except AguriCacheValidationError:
+        return AguriCacheInspection(candidates_path, manifest_path, fingerprint, False)
+    return AguriCacheInspection(candidates_path, manifest_path, fingerprint, True)
+
+
+def _aguri_cache_identity(
+    ctx: InputContext, cfg: ExperimentConfig, *, root: Path | None
+) -> tuple[
+    Path,
+    AguriBinaries,
+    dict[str, str],
+    str,
+    Path,
+    Path,
+    Path,
+]:
+    repository_root = (root or Path.cwd()).resolve()
+    binaries = resolve_aguri_binaries(cfg.aguri, root=repository_root)
+    executable_checksums = {
+        "aguri3": sha256_file(binaries.aguri3),
+        "agurim": sha256_file(binaries.agurim),
+    }
+    fingerprint = stable_json_hash(
+        {
+            "schema_version": AGURI_SCHEMA_VERSION,
+            "input_sha256": ctx.sha256,
+            "agurim_submodule_sha": PINNED_AGURIM_SHA,
+            "executable_sha256": executable_checksums,
+            "options": cfg.aguri.options,
+        }
+    )
+    stage_dir = (
+        repository_root
+        / "data"
+        / ctx.dataset_id
+        / "processed"
+        / "aguri"
+        / fingerprint
+    )
+    return (
+        repository_root,
+        binaries,
+        executable_checksums,
+        fingerprint,
+        stage_dir,
+        stage_dir / "aguri_candidates.csv",
+        stage_dir / "aguri_manifest.json",
+    )
 
 
 def _aguri_input_path(path: Path) -> tuple[Path, Path | None]:
