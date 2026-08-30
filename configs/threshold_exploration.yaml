@@ -1,0 +1,29 @@
+experiment:
+  name: threshold_exploration
+  description: Threshold-free scan-window exploration
+flow:
+  protocols: [tcp, udp]
+  inactive_timeout_seconds: null
+prefix:
+  ip_version: 4
+  candidate_sources: [src_prefix, dst_prefix]
+  min_prefix_length: 24
+  containment_strategy: prefer_broader
+  membership_mode: src_or_dst
+  normalized_24_enabled: true
+  top_k: null
+scan:
+  window_size_seconds: 60
+  window_step_seconds: 10
+  window_anchor: capture_start
+  window_membership: "[start,end)"
+  strict:
+    enabled: false
+  broad:
+    enabled: false
+aguri:
+  aguri3_executable: aguri3
+  agurim_executable: agurim
+  options: []
+analysis:
+  overall_ip_scope: ipv4

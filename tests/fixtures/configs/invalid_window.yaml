@@ -1,0 +1,26 @@
+experiment:
+  name: invalid_window
+  description: Invalid window test fixture
+flow:
+  inactive_timeout_seconds: null
+prefix:
+  ip_version: 4
+  candidate_sources: [src_prefix, dst_prefix]
+  min_prefix_length: 24
+  containment_strategy: prefer_broader
+  membership_mode: src_or_dst
+  normalized_24_enabled: true
+  top_k: null
+scan:
+  window_size_seconds: -1
+  window_step_seconds: 10
+  strict:
+    enabled: false
+  broad:
+    enabled: false
+aguri:
+  aguri3_executable: aguri3
+  agurim_executable: agurim
+  options: []
+analysis:
+  overall_ip_scope: ipv4
