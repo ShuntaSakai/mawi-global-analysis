@@ -87,9 +87,9 @@ class ScanConfig(StrictModel):
 
 
 class AguriConfig(StrictModel):
-    aguri3_executable: str
-    agurim_executable: str
-    options: list[str]
+    aguri3_executable: str | None = None
+    agurim_executable: str | None = None
+    options: list[str] = Field(default_factory=list)
 
 
 class AnalysisConfig(StrictModel):

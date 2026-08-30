@@ -22,8 +22,8 @@ scan:
   broad:
     enabled: false
 aguri:
-  aguri3_executable: aguri3
-  agurim_executable: agurim
+  aguri3_executable: null
+  agurim_executable: null
   options: []
 analysis:
   overall_ip_scope: ipv4_ipv6

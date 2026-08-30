@@ -22,6 +22,8 @@ def test_baseline_config_preserves_corrected_defaults() -> None:
     assert config.scan.window_step_seconds == 10
     assert config.scan.strict.enabled is False
     assert config.scan.broad.enabled is False
+    assert config.aguri.aguri3_executable is None
+    assert config.aguri.agurim_executable is None
     assert config.analysis.overall_ip_scope == "ipv4"
 
 
