@@ -37,6 +37,163 @@ LEGACY_OUTPUT_COLUMNS = (
 )
 
 
+CORRECTED_LEDGER_COLUMNS = (
+    "prefix",
+    "prefix_length",
+    "normalized_prefix_24",
+    "seen_as_src_prefix",
+    "seen_as_dst_prefix",
+    "aguri_occurrence_count",
+    "aguri_src_occurrence_count",
+    "aguri_dst_occurrence_count",
+    "selected_for_analysis",
+    "exclusion_reason",
+    "covered_by_prefix",
+)
+
+
+def build_corrected_prefix_ledger(
+    aguri_df: pd.DataFrame, cfg: Mapping[str, Any] | Any
+) -> pd.DataFrame:
+    """Build the IPv4 corrected-baseline candidate and selection ledger.
+
+    The corrected path always unions concrete source and destination prefix
+    observations. Selection is intentionally limited to address scope and
+    containment; it does not inspect flow-derived features or apply a top-k.
+    """
+    _require_columns(aguri_df, {"src_prefix", "dst_prefix"}, "Aguri")
+    min_prefix_length = _corrected_min_prefix_length(cfg)
+    candidates: dict[str, dict[str, object]] = {}
+
+    for column, source_key, count_key in (
+        ("src_prefix", "seen_as_src_prefix", "aguri_src_occurrence_count"),
+        ("dst_prefix", "seen_as_dst_prefix", "aguri_dst_occurrence_count"),
+    ):
+        for value in aguri_df[column]:
+            network = _parse_concrete_network(value)
+            if network is None:
+                continue
+            canonical_prefix = str(network)
+            candidate = candidates.setdefault(
+                canonical_prefix,
+                {
+                    "network": network,
+                    "seen_as_src_prefix": False,
+                    "seen_as_dst_prefix": False,
+                    "aguri_src_occurrence_count": 0,
+                    "aguri_dst_occurrence_count": 0,
+                },
+            )
+            candidate[source_key] = True
+            candidate[count_key] = int(candidate[count_key]) + 1
+
+    rows = [
+        _corrected_ledger_row(candidate, min_prefix_length)
+        for candidate in candidates.values()
+    ]
+    _resolve_corrected_containment(rows)
+    return pd.DataFrame(rows, columns=CORRECTED_LEDGER_COLUMNS).sort_values(
+        ["prefix"], kind="mergesort"
+    ).reset_index(drop=True)
+
+
+def run_corrected_prefix_stage(aguri_path: Path, cfg: Any, output_path: Path) -> Path:
+    """Write a corrected prefix candidate ledger from the Aguri artifact."""
+    if getattr(getattr(cfg, "experiment", None), "name", None) == "paper_legacy":
+        raise ValueError("corrected prefix stage cannot run paper_legacy selection")
+    ledger = build_corrected_prefix_ledger(pd.read_csv(aguri_path), cfg)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_csv_atomically(output_path, ledger)
+    return output_path
+
+
+def _corrected_min_prefix_length(cfg: Mapping[str, Any] | Any) -> int:
+    value = cfg.model_dump() if hasattr(cfg, "model_dump") else dict(cfg)
+    prefix_config = value.get("prefix", value)
+    if hasattr(prefix_config, "model_dump"):
+        prefix_config = prefix_config.model_dump()
+    min_prefix_length = prefix_config.get("min_prefix_length", 24)
+    if not isinstance(min_prefix_length, int) or isinstance(min_prefix_length, bool):
+        raise ValueError("corrected prefix min_prefix_length must be an integer")
+    if min_prefix_length != 24:
+        raise ValueError("corrected baseline requires min_prefix_length=24")
+    return min_prefix_length
+
+
+def _parse_concrete_network(
+    value: object,
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    if value is None or pd.isna(value):
+        return None
+    raw_prefix = str(value).strip()
+    if not raw_prefix or "*" in raw_prefix:
+        return None
+    try:
+        return ipaddress.ip_network(raw_prefix, strict=False)
+    except ValueError:
+        return None
+
+
+def _corrected_ledger_row(
+    candidate: dict[str, object], min_prefix_length: int
+) -> dict[str, object]:
+    network = candidate["network"]
+    assert isinstance(network, (ipaddress.IPv4Network, ipaddress.IPv6Network))
+    is_ipv4 = network.version == 4
+    eligible = is_ipv4 and network.prefixlen >= min_prefix_length
+    normalized_prefix_24: str | None = None
+    if is_ipv4 and network.prefixlen >= 24:
+        normalized_prefix_24 = str(
+            ipaddress.ip_network(f"{network.network_address}/24", strict=False)
+        )
+    exclusion_reason = ""
+    if not is_ipv4:
+        exclusion_reason = "outside_ipv4_baseline"
+    elif not eligible:
+        exclusion_reason = "broader_than_24"
+    return {
+        "prefix": str(network),
+        "prefix_length": network.prefixlen,
+        "normalized_prefix_24": normalized_prefix_24,
+        "seen_as_src_prefix": candidate["seen_as_src_prefix"],
+        "seen_as_dst_prefix": candidate["seen_as_dst_prefix"],
+        "aguri_occurrence_count": (
+            int(candidate["aguri_src_occurrence_count"])
+            + int(candidate["aguri_dst_occurrence_count"])
+        ),
+        "aguri_src_occurrence_count": candidate["aguri_src_occurrence_count"],
+        "aguri_dst_occurrence_count": candidate["aguri_dst_occurrence_count"],
+        "selected_for_analysis": eligible,
+        "exclusion_reason": exclusion_reason,
+        "covered_by_prefix": "",
+        "_network": network,
+    }
+
+
+def _resolve_corrected_containment(rows: list[dict[str, object]]) -> None:
+    selected_networks: list[ipaddress.IPv4Network] = []
+    eligible_rows = sorted(
+        (row for row in rows if row["selected_for_analysis"]),
+        key=lambda row: (
+            int(getattr(row["_network"], "network_address")),
+            getattr(row["_network"], "prefixlen"),
+        ),
+    )
+    for row in eligible_rows:
+        network = row["_network"]
+        assert isinstance(network, ipaddress.IPv4Network)
+        parent = next(
+            (candidate for candidate in selected_networks if network.subnet_of(candidate)),
+            None,
+        )
+        if parent is not None:
+            row["selected_for_analysis"] = False
+            row["exclusion_reason"] = "covered_by_parent"
+            row["covered_by_prefix"] = str(parent)
+        else:
+            selected_networks.append(network)
+
+
 def legacy_select_prefixes(
     aguri_df: pd.DataFrame, flows: pd.DataFrame, cfg: Mapping[str, Any] | Any
 ) -> pd.DataFrame:
