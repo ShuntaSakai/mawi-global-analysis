@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from mawi_global_analysis.hashing import sha256_file
+from mawi_global_analysis.io import load_run
 from mawi_global_analysis.manifests import RunManifest
 from mawi_global_analysis import pipeline
 
@@ -43,6 +44,36 @@ def _stub_aguri(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("mawi_global_analysis.pipeline.run_aguri_stage", copy_candidates)
 
 
+def _configured_aguri_command(tmp_path: Path, dataset_id: str) -> tuple[list[str], Path]:
+    aguri3 = tmp_path / f"{dataset_id}-aguri3"
+    aguri3.write_text("#!/bin/sh\ncp \"$2\" \"$4\"\n", encoding="utf-8")
+    aguri3.chmod(0o755)
+    agurim = tmp_path / f"{dataset_id}-agurim"
+    agurim.write_text(
+        "#!/bin/sh\nprintf '%s\\n' '[ 1] 198.51.100.0/24 192.0.2.0/24: 100 (100.00%) 2 (100.00%)' '\t[6:40000:80] 100.00% 100.00%' > \"$2\"\n",
+        encoding="utf-8",
+    )
+    agurim.chmod(0o755)
+    config_path = tmp_path / f"{dataset_id}-baseline.yaml"
+    config_path.write_text(
+        CONFIG_PATH.read_text(encoding="utf-8")
+        .replace("aguri3_executable: null", f"aguri3_executable: {aguri3}")
+        .replace("agurim_executable: null", f"agurim_executable: {agurim}"),
+        encoding="utf-8",
+    )
+    return (
+        [
+            "--input",
+            str(PCAP_PATH),
+            "--dataset-id",
+            dataset_id,
+            "--config",
+            str(config_path),
+        ],
+        agurim,
+    )
+
+
 def test_dry_run_reports_m0_m3_decisions_without_creating_artifacts(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -76,6 +107,22 @@ def test_dataset_dry_run_never_downloads_a_trace(tmp_path: Path, monkeypatch) ->
     )
 
     assert pipeline.run_pipeline(args) == 0
+    assert not (tmp_path / "data").exists()
+    assert not (tmp_path / "results").exists()
+
+
+@pytest.mark.parametrize("stage", ["flows", "aguri"])
+def test_local_input_dry_run_partial_upstream_stage_has_execution_dependency_parity(
+    tmp_path: Path, monkeypatch, capsys, stage: str
+) -> None:
+    """A resolved local input satisfies partial dry-run dependencies without writes."""
+    monkeypatch.chdir(tmp_path)
+
+    assert pipeline.run_pipeline(
+        _args("--dry-run", "--from", stage, "--to", stage)
+    ) == 0
+
+    assert f"[EXECUTE] {stage}" in capsys.readouterr().out
     assert not (tmp_path / "data").exists()
     assert not (tmp_path / "results").exists()
 
@@ -193,10 +240,10 @@ def test_input_resolution_failure_finalizes_a_provisional_manifest(
     assert manifest["stages"][-1] == {"name": "input", "status": "failed"}
 
 
-def test_compatible_manifest_records_input_resolution_failure_as_new_invocation(
+def test_input_resolution_failure_does_not_mutate_successful_manifest_before_identity_check(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A compatible historical run must not hide a later input-stage failure."""
+    """A successful run is not reopened until a new input identity is resolved."""
     monkeypatch.chdir(tmp_path)
     manifest_path = tmp_path / "results" / "fixture" / "baseline" / "run_manifest.json"
     manifest = RunManifest.start(
@@ -219,10 +266,8 @@ def test_compatible_manifest_records_input_resolution_failure_as_new_invocation(
         pipeline.run_pipeline(_args())
 
     persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert persisted["status"] == "failed"
-    assert persisted["invocations"][0]["status"] == "success"
-    assert persisted["invocations"][-1]["status"] == "failed"
-    assert persisted["stages"][-1] == {"name": "input", "status": "failed"}
+    assert persisted["status"] == "success"
+    assert len(persisted["invocations"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -256,6 +301,27 @@ def test_dry_run_rejects_corrupted_run_local_reuse(
     assert pipeline.run_pipeline(_args("--dry-run")) == 0
 
     assert f"[EXECUTE] {expected_stage}" in capsys.readouterr().out
+
+
+def test_dry_run_rejects_run_local_artifacts_without_producer_identity(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A header-valid table without its producer binding cannot be reused."""
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    assert pipeline.run_pipeline(_args()) == 0
+    manifest_path = tmp_path / "results" / "fixture" / "baseline" / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["prefixes"].pop("producer")
+    manifest["artifacts"]["flow_prefix_membership"].pop("producer")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    capsys.readouterr()
+
+    assert pipeline.run_pipeline(_args("--dry-run")) == 0
+
+    output = capsys.readouterr().out
+    assert "[EXECUTE] prefixes" in output
+    assert "[EXECUTE] membership" in output
 
 
 def test_dry_run_does_not_reuse_an_unvalidated_aguri_artifact(
@@ -303,8 +369,307 @@ def test_resumption_records_the_code_identity_and_cache_fingerprints(
         "first-code",
         "resumed-code",
     ]
+    assert manifest["git_commit"] == "first-code"
+    assert manifest["code_identity"]["git_commit"] == "first-code"
+    assert [entry["code_identity"]["git_commit"] for entry in manifest["invocations"]] == [
+        "first-code",
+        "resumed-code",
+    ]
+    assert manifest["artifacts"]["flows"]["producer"]["code_identity"]["git_commit"] == "first-code"
     assert manifest["cache"]["flows"]["fingerprint"]
     assert manifest["cache"]["flows"]["manifest_path"].endswith("flow_manifest.json")
+
+
+def _latest_stage_statuses(manifest: dict[str, object]) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for stage in manifest["stages"]:  # type: ignore[index]
+        statuses[stage["name"]] = stage["status"]  # type: ignore[index]
+    return statuses
+
+
+def test_semantic_flow_cache_change_rebuilds_included_dependents(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """New canonical-flow semantics cannot reuse run-local downstream tables."""
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    assert pipeline.run_pipeline(_args()) == 0
+
+    import mawi_global_analysis.flow_stage as flow_stage
+
+    monkeypatch.setattr(pipeline, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    monkeypatch.setattr(flow_stage, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    assert pipeline.run_pipeline(_args()) == 0
+
+    manifest = json.loads(
+        (tmp_path / "results" / "fixture" / "baseline" / "run_manifest.json").read_text()
+    )
+    statuses = _latest_stage_statuses(manifest)
+    assert statuses["flows"] == "completed"
+    assert statuses["scan-stats"] == "completed"
+    assert statuses["scan-labels"] == "completed"
+    assert statuses["membership"] == "completed"
+
+
+def test_partial_executed_flow_deactivates_excluded_dependent_artifacts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A successful partial flow run cannot leave an old coherent run loadable."""
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    assert pipeline.run_pipeline(_args()) == 0
+    run_dir = tmp_path / "results" / "fixture" / "baseline"
+    stale_files = (
+        run_dir / "source_scan_windows.csv",
+        run_dir / "source_scan_summary.csv",
+        run_dir / "flow_labels.csv",
+        run_dir / "flow_prefix_membership.csv",
+    )
+    assert all(path.is_file() for path in stale_files)
+
+    import mawi_global_analysis.flow_stage as flow_stage
+
+    monkeypatch.setattr(pipeline, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    monkeypatch.setattr(flow_stage, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    assert pipeline.run_pipeline(_args("--to", "flows")) == 0
+
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "success"
+    assert "prefixes" in manifest["artifacts"]
+    assert not {
+        "source_scan_windows",
+        "source_scan_summary",
+        "flow_labels",
+        "flow_prefix_membership",
+    } & set(manifest["artifacts"])
+    assert not {"scan-stats", "scan-labels"} & set(manifest["cache"])
+    assert all(path.is_file() for path in stale_files)
+
+    with pytest.raises(
+        FileNotFoundError, match="missing required artifact entry: flow_labels"
+    ):
+        load_run("fixture", "baseline", root=tmp_path)
+    with pytest.raises(pipeline.MissingUpstreamArtifactError, match="scan-stats"):
+        pipeline.run_pipeline(
+            _args("--dry-run", "--from", "scan-labels", "--to", "scan-labels")
+        )
+
+
+def test_executed_flow_rebinds_artifact_and_cache_to_the_new_producer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regenerated flows must not retain the prior cache producer identity."""
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    identities = iter(
+        (
+            {"git_commit": "old-code", "source_hash": "old", "dirty": False},
+            {"git_commit": "new-code", "source_hash": "new", "dirty": True},
+        )
+    )
+    monkeypatch.setattr(pipeline, "_code_identity", lambda: next(identities))
+    assert pipeline.run_pipeline(_args()) == 0
+
+    import mawi_global_analysis.flow_stage as flow_stage
+
+    monkeypatch.setattr(pipeline, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    monkeypatch.setattr(flow_stage, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    assert pipeline.run_pipeline(_args()) == 0
+
+    manifest = json.loads(
+        (tmp_path / "results" / "fixture" / "baseline" / "run_manifest.json").read_text()
+    )
+    expected_fingerprint = pipeline.flow_fingerprint(
+        sha256_file(PCAP_PATH), pipeline.load_config(CONFIG_PATH), "flows-v-next"
+    )
+    producer = manifest["artifacts"]["flows"]["producer"]
+    assert producer["flow_fingerprint"] == expected_fingerprint
+    assert producer["code_identity"]["git_commit"] == "new-code"
+    assert manifest["cache"]["flows"]["fingerprint"] == expected_fingerprint
+    assert manifest["cache"]["flows"]["producer"] == producer
+    monkeypatch.setattr(
+        pipeline,
+        "_code_identity",
+        lambda: {"git_commit": "new-code", "source_hash": "new", "dirty": True},
+    )
+    assert pipeline.run_pipeline(
+        _args("--from", "scan-stats", "--to", "scan-stats")
+    ) == 0
+    assert pipeline.run_pipeline(
+        _args("--from", "scan-stats", "--to", "scan-stats", "--dry-run")
+    ) == 0
+
+
+def test_partial_scan_stats_rejects_a_stale_excluded_flow_producer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A partial scan-stat run must not stamp old flows with a new fingerprint."""
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    assert pipeline.run_pipeline(_args()) == 0
+
+    import mawi_global_analysis.flow_stage as flow_stage
+
+    monkeypatch.setattr(pipeline, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    monkeypatch.setattr(flow_stage, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    partial = _args("--from", "scan-stats", "--to", "scan-stats")
+
+    with pytest.raises(pipeline.MissingUpstreamArtifactError, match="flows"):
+        pipeline.run_pipeline(partial)
+    with pytest.raises(pipeline.MissingUpstreamArtifactError, match="flows"):
+        pipeline.run_pipeline(_args("--from", "scan-stats", "--to", "scan-stats", "--dry-run"))
+
+
+def test_partial_membership_rejects_a_stale_excluded_prefix_producer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Membership cannot consume prefixes made from a different Aguri identity."""
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    assert pipeline.run_pipeline(_args()) == 0
+    manifest_path = tmp_path / "results" / "fixture" / "baseline" / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["prefixes"]["producer"]["aguri_fingerprint"] = "old-aguri"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(pipeline.MissingUpstreamArtifactError, match="prefixes"):
+        pipeline.run_pipeline(_args("--from", "membership", "--to", "membership"))
+    with pytest.raises(pipeline.MissingUpstreamArtifactError, match="prefixes"):
+        pipeline.run_pipeline(
+            _args("--from", "membership", "--to", "membership", "--dry-run")
+        )
+
+
+def test_fresh_run_records_reused_flow_cache_as_its_cache_producer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A reused shared flow cache is not falsely attributed to the new run code."""
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    assert pipeline.run_pipeline(_args("--from", "flows", "--to", "flows")) == 0
+    monkeypatch.setattr(
+        pipeline,
+        "_code_identity",
+        lambda: {"git_commit": "new-run", "source_hash": "new", "dirty": True},
+    )
+
+    assert pipeline.run_pipeline(
+        _args("--from", "flows", "--to", "flows", "--run-name", "fresh-flow")
+    ) == 0
+    manifest = json.loads(
+        (tmp_path / "results" / "fixture" / "fresh-flow" / "run_manifest.json").read_text()
+    )
+    producer = manifest["artifacts"]["flows"]["producer"]
+    assert producer["cache_manifest_sha256"]
+    assert "code_identity" not in producer
+    assert manifest["cache"]["flows"]["producer"] == producer
+
+
+def test_resumed_run_rebinds_a_newer_reused_flow_cache_producer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A resumed run must bind reuse to the selected shared flow cache."""
+    monkeypatch.chdir(tmp_path)
+    identities = iter(
+        (
+            {"git_commit": "old-code", "source_hash": "old", "dirty": False},
+            {"git_commit": "builder-code", "source_hash": "builder", "dirty": False},
+            {"git_commit": "resume-code", "source_hash": "resume", "dirty": True},
+        )
+    )
+    monkeypatch.setattr(pipeline, "_code_identity", lambda: next(identities))
+    partial = ("--from", "flows", "--to", "flows")
+    assert pipeline.run_pipeline(_args(*partial)) == 0
+
+    import mawi_global_analysis.flow_stage as flow_stage
+
+    monkeypatch.setattr(pipeline, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    monkeypatch.setattr(flow_stage, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    assert pipeline.run_pipeline(
+        _args(*partial, "--run-name", "new-flow-cache")
+    ) == 0
+    builder_manifest = json.loads(
+        (
+            tmp_path
+            / "results"
+            / "fixture"
+            / "new-flow-cache"
+            / "run_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected = dict(builder_manifest["artifacts"]["flows"]["producer"])
+    expected.pop("code_identity")
+
+    assert pipeline.run_pipeline(_args(*partial)) == 0
+
+    resumed = json.loads(
+        (
+            tmp_path / "results" / "fixture" / "baseline" / "run_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert _latest_stage_statuses(resumed)["flows"] == "reused"
+    assert resumed["artifacts"]["flows"]["producer"] == expected
+    assert resumed["cache"]["flows"]["producer"] == expected
+    assert resumed["cache"]["flows"]["manifest_path"] == expected["cache_manifest_path"]
+    assert resumed["cache"]["flows"]["fingerprint"] == expected["flow_fingerprint"]
+    assert "code_identity" not in resumed["artifacts"]["flows"]["producer"]
+
+
+def test_executed_aguri_rebuilds_included_prefix_dependents(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A non-reused Aguri candidate artifact invalidates prefix-derived outputs."""
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    assert pipeline.run_pipeline(_args()) == 0
+    assert pipeline.run_pipeline(_args()) == 0
+
+    manifest = json.loads(
+        (tmp_path / "results" / "fixture" / "baseline" / "run_manifest.json").read_text()
+    )
+    statuses = _latest_stage_statuses(manifest)
+    assert statuses["aguri"] == "completed"
+    assert statuses["prefixes"] == "completed"
+    assert statuses["membership"] == "completed"
+
+
+def test_input_conflict_does_not_mutate_successful_manifest_before_comparison(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An incompatible resolved input must not relabel a prior successful run."""
+    monkeypatch.chdir(tmp_path)
+    manifest_path = tmp_path / "results" / "fixture" / "baseline" / "run_manifest.json"
+    manifest = RunManifest.start(
+        manifest_path, "fixture", CONFIG_PATH, CONFIG_PATH.read_text(),
+        sha256_file(CONFIG_PATH), "historic-code"
+    )
+    manifest.set_input(PCAP_PATH, "different-input-sha", PCAP_PATH.stat().st_size)
+    manifest.finalize_success()
+    before = manifest_path.read_text()
+
+    with pytest.raises(pipeline.RunConflictError, match="existing input_sha256"):
+        pipeline.run_pipeline(_args())
+
+    assert manifest_path.read_text() == before
+
+
+def test_pre_input_failed_manifest_allows_resolved_input_retry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A failed download with no checksum is not an incompatible historical input."""
+    monkeypatch.chdir(tmp_path)
+    manifest_path = tmp_path / "results" / "fixture" / "baseline" / "run_manifest.json"
+    manifest = RunManifest.start(
+        manifest_path, "fixture", CONFIG_PATH, CONFIG_PATH.read_text(),
+        sha256_file(CONFIG_PATH), "failed-before-input"
+    )
+    manifest.finalize_failure(OSError("download unavailable"))
+    _stub_aguri(monkeypatch, tmp_path)
+
+    assert pipeline.run_pipeline(_args()) == 0
+    persisted = json.loads(manifest_path.read_text())
+    assert persisted["status"] == "success"
+    assert persisted["input"]["sha256"] == sha256_file(PCAP_PATH)
 
 
 def test_pipeline_reuses_a_fingerprint_valid_aguri_cache(
@@ -355,6 +720,199 @@ def test_pipeline_reuses_a_fingerprint_valid_aguri_cache(
     )
     assert manifest["cache"]["aguri"]["fingerprint"]
     assert [stage["status"] for stage in manifest["stages"] if stage["name"] == "aguri"][-1] == "reused"
+
+    monkeypatch.setattr(
+        pipeline,
+        "_code_identity",
+        lambda: {"git_commit": "new-run", "source_hash": "new", "dirty": True},
+    )
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args(
+            [*command, "--from", "aguri", "--to", "aguri", "--run-name", "fresh-aguri"]
+        )
+    ) == 0
+    fresh = json.loads(
+        (tmp_path / "results" / "aguri-cache-fixture" / "fresh-aguri" / "run_manifest.json").read_text()
+    )
+    producer = fresh["artifacts"]["aguri_candidates"]["producer"]
+    assert producer["cache_manifest_sha256"]
+    assert "code_identity" not in producer
+    assert fresh["cache"]["aguri"]["producer"] == producer
+
+
+def test_executed_aguri_rebinds_artifact_and_cache_to_the_new_producer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A changed Aguri executable must replace old run-local producer metadata."""
+    monkeypatch.chdir(tmp_path)
+    command_args, agurim = _configured_aguri_command(
+        tmp_path, "aguri-producer-fixture"
+    )
+    command = pipeline.build_parser().parse_args(command_args)
+    identities = iter(
+        (
+            {"git_commit": "old-code", "source_hash": "old", "dirty": False},
+            {"git_commit": "new-code", "source_hash": "new", "dirty": True},
+        )
+    )
+    monkeypatch.setattr(pipeline, "_code_identity", lambda: next(identities))
+    assert pipeline.run_pipeline(command) == 0
+    old_manifest = json.loads(
+        (
+            tmp_path
+            / "results"
+            / "aguri-producer-fixture"
+            / "baseline"
+            / "run_manifest.json"
+        ).read_text()
+    )
+    old_fingerprint = old_manifest["artifacts"]["aguri_candidates"]["producer"][
+        "aguri_fingerprint"
+    ]
+
+    agurim.write_text(agurim.read_text() + "# changed executable identity\n")
+    assert pipeline.run_pipeline(command) == 0
+
+    manifest = json.loads(
+        (
+            tmp_path
+            / "results"
+            / "aguri-producer-fixture"
+            / "baseline"
+            / "run_manifest.json"
+        ).read_text()
+    )
+    producer = manifest["artifacts"]["aguri_candidates"]["producer"]
+    assert producer["aguri_fingerprint"] != old_fingerprint
+    assert producer["code_identity"]["git_commit"] == "new-code"
+    assert manifest["cache"]["aguri"]["fingerprint"] == producer["aguri_fingerprint"]
+    assert manifest["cache"]["aguri"]["producer"] == producer
+    monkeypatch.setattr(
+        pipeline,
+        "_code_identity",
+        lambda: {"git_commit": "new-code", "source_hash": "new", "dirty": True},
+    )
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args(
+            [*command_args, "--from", "prefixes", "--to", "prefixes"]
+        )
+    ) == 0
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args(
+            [
+                *command_args,
+                "--from",
+                "prefixes",
+                "--to",
+                "prefixes",
+                "--dry-run",
+            ]
+        )
+    ) == 0
+
+
+def test_resumed_run_rebinds_a_newer_reused_aguri_cache_producer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A resumed run must bind reuse to the selected shared Aguri cache."""
+    monkeypatch.chdir(tmp_path)
+    command, agurim = _configured_aguri_command(tmp_path, "aguri-rebind-fixture")
+    identities = iter(
+        (
+            {"git_commit": "old-code", "source_hash": "old", "dirty": False},
+            {"git_commit": "builder-code", "source_hash": "builder", "dirty": False},
+            {"git_commit": "resume-code", "source_hash": "resume", "dirty": True},
+        )
+    )
+    monkeypatch.setattr(pipeline, "_code_identity", lambda: next(identities))
+    partial = ("--from", "aguri", "--to", "aguri")
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args([*command, *partial])
+    ) == 0
+
+    agurim.write_text(
+        agurim.read_text(encoding="utf-8") + "# newer semantic cache\n",
+        encoding="utf-8",
+    )
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args(
+            [*command, *partial, "--run-name", "new-aguri-cache"]
+        )
+    ) == 0
+    builder_manifest = json.loads(
+        (
+            tmp_path
+            / "results"
+            / "aguri-rebind-fixture"
+            / "new-aguri-cache"
+            / "run_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected = dict(
+        builder_manifest["artifacts"]["aguri_candidates"]["producer"]
+    )
+    expected.pop("code_identity")
+
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args([*command, *partial])
+    ) == 0
+
+    resumed = json.loads(
+        (
+            tmp_path
+            / "results"
+            / "aguri-rebind-fixture"
+            / "baseline"
+            / "run_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert _latest_stage_statuses(resumed)["aguri"] == "reused"
+    assert resumed["artifacts"]["aguri_candidates"]["producer"] == expected
+    assert resumed["cache"]["aguri"]["producer"] == expected
+    assert resumed["cache"]["aguri"]["manifest_path"] == expected["cache_manifest_path"]
+    assert resumed["cache"]["aguri"]["fingerprint"] == expected["aguri_fingerprint"]
+    assert "code_identity" not in resumed["artifacts"]["aguri_candidates"]["producer"]
+
+
+def test_generated_aguri_supports_partial_prefixes_and_rejects_semantic_staleness(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Historical code metadata is allowed, but stale Aguri semantics are not."""
+    monkeypatch.chdir(tmp_path)
+    command, _ = _configured_aguri_command(tmp_path, "partial-aguri-fixture")
+    assert pipeline.run_pipeline(pipeline.build_parser().parse_args(command)) == 0
+
+    partial = pipeline.build_parser().parse_args(
+        [*command, "--from", "prefixes", "--to", "prefixes"]
+    )
+    assert pipeline.run_pipeline(partial) == 0
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args(
+            [*command, "--from", "prefixes", "--to", "prefixes", "--dry-run"]
+        )
+    ) == 0
+
+    manifest_path = (
+        tmp_path
+        / "results"
+        / "partial-aguri-fixture"
+        / "baseline"
+        / "run_manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    producer = manifest["artifacts"]["aguri_candidates"]["producer"]
+    assert "code_identity" in producer
+    producer["aguri_fingerprint"] = "stale-aguri"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(pipeline.MissingUpstreamArtifactError, match="aguri"):
+        pipeline.run_pipeline(
+            pipeline.build_parser().parse_args(
+                [*command, "--from", "prefixes", "--to", "prefixes", "--dry-run"]
+            )
+        )
+    with pytest.raises(pipeline.MissingUpstreamArtifactError, match="aguri"):
+        pipeline.run_pipeline(partial)
 
 
 def test_legacy_config_uses_legacy_prefix_stage_without_corrected_membership(

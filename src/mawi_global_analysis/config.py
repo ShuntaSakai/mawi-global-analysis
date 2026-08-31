@@ -143,6 +143,19 @@ class ExperimentConfig(StrictModel):
             raise ValueError("paper_legacy requires a legacy configuration block")
         if self.experiment.name != "paper_legacy" and self.legacy is not None:
             raise ValueError("legacy configuration is reserved for paper_legacy")
+        if self.experiment.name == "baseline":
+            if self.prefix.ip_version != 4:
+                raise ValueError("baseline requires an IPv4 prefix analysis scope")
+            if self.prefix.candidate_sources != ["src_prefix", "dst_prefix"]:
+                raise ValueError(
+                    "baseline requires src_prefix and dst_prefix candidate sources"
+                )
+            if self.prefix.membership_mode != "src_or_dst":
+                raise ValueError("baseline requires src_or_dst prefix membership")
+            if self.prefix.top_k is not None:
+                raise ValueError("baseline requires no corrected top-k limit")
+            if self.analysis.overall_ip_scope != "ipv4":
+                raise ValueError("baseline requires an IPv4 overall analysis scope")
         return self
 
 

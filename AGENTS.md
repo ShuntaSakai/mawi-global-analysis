@@ -185,6 +185,16 @@ At M4:
 - Do **not** invent `N_strict`, `M_strict`, `N_broad`, or `M_broad` to continue implementation.
 - Stop at the M4 human-review gate before implementing M5 Strict/Broad removal behavior that depends on chosen numeric thresholds.
 
+### Verification evidence boundary
+
+- Fixture and verified-golden validation establish the implemented M0–M4
+  contracts; they must not be described as a completed raw-PCAP E2E run.
+- A full `202604081400` raw-PCAP run is separate evidence and may remain
+  deferred when the trace is unavailable locally. Do not download it merely to
+  make a verification report appear complete.
+- The deferred raw-PCAP E2E is not a reason to invent M5 thresholds or bypass
+  the M4 human-review gate.
+
 ## Data and artifact separation
 
 Keep expensive PCAP-derived facts separate from run-specific interpretation.

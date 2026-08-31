@@ -16,6 +16,7 @@ def test_baseline_config_preserves_corrected_defaults() -> None:
     assert config.experiment.description == "Corrected raw analysis"
     assert config.flow.inactive_timeout_seconds is None
     assert config.prefix.ip_version == 4
+    assert config.prefix.candidate_sources == ["src_prefix", "dst_prefix"]
     assert config.prefix.membership_mode == "src_or_dst"
     assert config.prefix.top_k is None
     assert config.scan.window_size_seconds == 60
@@ -25,6 +26,35 @@ def test_baseline_config_preserves_corrected_defaults() -> None:
     assert config.aguri.aguri3_executable is None
     assert config.aguri.agurim_executable is None
     assert config.analysis.overall_ip_scope == "ipv4"
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        ("ip_version: 4", "ip_version: 6"),
+        (
+            "candidate_sources: [src_prefix, dst_prefix]",
+            "candidate_sources: [dst_prefix]",
+        ),
+        ("membership_mode: src_or_dst", "membership_mode: dst_only"),
+        ("top_k: null", "top_k: 10"),
+        ("overall_ip_scope: ipv4", "overall_ip_scope: ipv4_ipv6"),
+    ],
+)
+def test_baseline_identity_rejects_corrected_methodology_regressions(
+    tmp_path: Path, replacement: tuple[str, str]
+) -> None:
+    """A baseline config must not silently adopt legacy prefix semantics."""
+    config_path = tmp_path / "regressed_baseline.yaml"
+    baseline_config = (ROOT / "configs" / "baseline.yaml").read_text(
+        encoding="utf-8"
+    )
+    config_path.write_text(
+        baseline_config.replace(*replacement), encoding="utf-8"
+    )
+
+    with pytest.raises(ValidationError, match="baseline requires"):
+        load_config(config_path)
 
 
 def test_legacy_scope_matches_the_verified_old_result_artifacts() -> None:

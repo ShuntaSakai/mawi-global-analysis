@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -15,7 +16,11 @@ from typing import Any
 
 import pandas as pd
 
-from mawi_global_analysis.aguri import inspect_aguri_cache, run_aguri_stage
+from mawi_global_analysis.aguri import (
+    AGURI_CANDIDATE_COLUMNS,
+    inspect_aguri_cache,
+    run_aguri_stage,
+)
 from mawi_global_analysis.config import ExperimentConfig, load_config
 from mawi_global_analysis.dataset import MawiDownloader, MawiResolver, resolve_local_input
 from mawi_global_analysis.flow import capture_start_timestamp
@@ -100,6 +105,32 @@ LEGACY_FORCE_INVALIDATES = {
     "scan-labels": frozenset(("scan-labels",)),
     "prefixes": frozenset(("prefixes",)),
 }
+DOWNSTREAM_RUN_RECORDS = {
+    "flows": {
+        "scan-stats": (
+            frozenset(("source_scan_windows", "source_scan_summary")),
+            frozenset(("scan-stats",)),
+        ),
+        "scan-labels": (
+            frozenset(("flow_labels",)),
+            frozenset(("scan-labels",)),
+        ),
+        "membership": (frozenset(("flow_prefix_membership",)), frozenset()),
+    },
+    "aguri": {
+        "prefixes": (frozenset(("prefixes",)), frozenset()),
+        "membership": (frozenset(("flow_prefix_membership",)), frozenset()),
+    },
+    "scan-stats": {
+        "scan-labels": (
+            frozenset(("flow_labels",)),
+            frozenset(("scan-labels",)),
+        ),
+    },
+    "prefixes": {
+        "membership": (frozenset(("flow_prefix_membership",)), frozenset()),
+    },
+}
 
 
 class RunConflictError(ValueError):
@@ -160,26 +191,26 @@ def run_pipeline(args: argparse.Namespace) -> int:
     provisional_paths = _provisional_run_paths(args, run_name)
     manifest: RunManifest | None = None
     existing: dict[str, Any] | None = None
-    if not args.dry_run and provisional_paths is not None:
+    if provisional_paths is not None:
         existing = _load_existing_manifest(provisional_paths.manifest)
-        if existing is None:
+        if existing is not None:
+            _ensure_existing_config_identity(existing, config_hash)
+
+    try:
+        input_resolution = _resolve_input(args, dry_run=args.dry_run)
+    except Exception as error:
+        if not args.dry_run and existing is None and provisional_paths is not None:
+            code_identity = _code_identity()
             manifest = RunManifest.start(
                 provisional_paths.manifest,
                 provisional_paths.run_dir.parent.name,
                 config_path,
                 config_text,
                 config_hash,
-                _git_commit(),
+                code_identity["git_commit"],
+                code_identity,
             )
             manifest.record_stage("input", "running")
-        else:
-            _ensure_existing_config_identity(existing, config_hash)
-            manifest = RunManifest.resume(provisional_paths.manifest, _git_commit())
-            manifest.record_stage("input", "running")
-
-    try:
-        input_resolution = _resolve_input(args, dry_run=args.dry_run)
-    except Exception as error:
         if manifest is not None:
             manifest.record_stage("input", "failed")
             manifest.finalize_failure(error)
@@ -201,10 +232,12 @@ def run_pipeline(args: argparse.Namespace) -> int:
     if args.dry_run:
         dry_run_artifacts = _existing_artifacts(existing, config, context)
         _add_valid_dataset_cache_artifacts(dry_run_artifacts, context, config)
+        if context.sha256 and context.path.is_file():
+            dry_run_artifacts["input"] = context.path
         for stage in selected_stages:
             if stage != "input":
                 _require_omitted_dependencies(
-                    stage, selected_stages, dry_run_artifacts, config
+                    stage, selected_stages, dry_run_artifacts, config, existing, context
                 )
         for stage, decision in _planned_decisions(
             selected_stages, forced_stages, context, config, paths, existing
@@ -213,8 +246,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
         return 0
 
     if manifest is None:
+        code_identity = _code_identity()
         manifest = (
-            RunManifest.resume(paths.manifest, _git_commit())
+            RunManifest.resume(paths.manifest, code_identity["git_commit"], code_identity)
             if existing is not None
             else RunManifest.start(
                 paths.manifest,
@@ -222,7 +256,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 config_path,
                 config_text,
                 config_hash,
-                _git_commit(),
+                code_identity["git_commit"],
+                code_identity,
             )
         )
         manifest.record_stage("input", "running")
@@ -240,7 +275,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
             if stage == "input":
                 continue
             current_stage = stage
-            _require_omitted_dependencies(stage, selected_stages, artifacts, config)
+            _require_omitted_dependencies(
+                stage, selected_stages, artifacts, config, existing, context
+            )
             manifest.record_stage(stage, "running")
             if stage == "flows":
                 forced = stage in effective_forced_stages
@@ -249,34 +286,67 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 flows_path = run_flow_stage(context, config, force=forced)
                 artifacts["flows"] = flows_path
                 manifest.record_stage("flows", "reused" if was_cached else "completed")
-                manifest.record_artifact("flows", flows_path, _csv_row_count(flows_path))
-                manifest.record_cache(
+                flow_metadata = {
+                    "fingerprint": flow_fingerprint(
+                        context.sha256, config, FLOW_SCHEMA_VERSION
+                    ),
+                    "manifest_path": str(flows_path.parent / "flow_manifest.json"),
+                }
+                flow_producer = _flow_artifact_producer(flows_path)
+                flow_artifact_producer = _reuse_or_produce_artifact_producer(
+                    existing,
                     "flows",
-                    {
-                        "fingerprint": flow_fingerprint(
-                            context.sha256, config, FLOW_SCHEMA_VERSION
-                        ),
-                        "manifest_path": str(flows_path.parent / "flow_manifest.json"),
-                    },
+                    flow_producer,
+                    code_identity if not was_cached else None,
                 )
+                manifest.record_artifact(
+                    "flows",
+                    flows_path,
+                    _csv_row_count(flows_path),
+                    flow_artifact_producer,
+                )
+                manifest.record_cache(
+                    "flows", {**flow_metadata, "producer": flow_artifact_producer}
+                )
+                if not was_cached:
+                    _deactivate_excluded_downstream_records(
+                        manifest, "flows", config, selected_stages
+                    )
+                    effective_forced_stages.update(
+                        {"scan-stats", "scan-labels", "membership"}
+                        | ({"prefixes"} if _is_legacy(config) else set())
+                    )
             elif stage == "aguri":
                 aguri_cache = _inspect_aguri_cache_if_available(context, config)
                 aguri_path = run_aguri_stage(
                     context, config, force=stage in forced_stages
                 )
                 artifacts["aguri"] = aguri_path
-                manifest.record_stage(
-                    "aguri",
-                    "reused"
-                    if aguri_cache is not None
+                aguri_reused = (
+                    aguri_cache is not None
                     and aguri_cache.valid
                     and stage not in forced_stages
-                    else "completed",
                 )
+                aguri_producer = _aguri_artifact_producer(aguri_path)
+                aguri_artifact_producer = _reuse_or_produce_artifact_producer(
+                    existing,
+                    "aguri_candidates",
+                    aguri_producer,
+                    code_identity if not aguri_reused else None,
+                )
+                manifest.record_stage("aguri", "reused" if aguri_reused else "completed")
                 manifest.record_artifact(
-                    "aguri_candidates", aguri_path, _csv_row_count(aguri_path)
+                    "aguri_candidates",
+                    aguri_path,
+                    _csv_row_count(aguri_path),
+                    aguri_artifact_producer,
                 )
-                _record_aguri_cache(manifest, aguri_path)
+                _record_aguri_cache(manifest, aguri_path, aguri_artifact_producer)
+                if not aguri_reused:
+                    _deactivate_excluded_downstream_records(
+                        manifest, "aguri", config, selected_stages
+                    )
+                    effective_forced_stages.update({"prefixes", "membership"})
             elif stage == "scan-stats":
                 if stage in effective_forced_stages or not _valid_scan_stats_artifacts(
                     paths, existing, context, config
@@ -299,15 +369,36 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     "source_scan_windows",
                     paths.scan_windows,
                     _csv_row_count(paths.scan_windows),
+                    {
+                        "flow_fingerprint": flow_fingerprint(
+                            context.sha256, config, FLOW_SCHEMA_VERSION
+                        ),
+                        "code_identity": code_identity,
+                    }
+                    if stage_status == "completed"
+                    else None,
                 )
                 manifest.record_artifact(
                     "source_scan_summary",
                     paths.scan_summary,
                     _csv_row_count(paths.scan_summary),
+                    {
+                        "flow_fingerprint": flow_fingerprint(
+                            context.sha256, config, FLOW_SCHEMA_VERSION
+                        ),
+                        "code_identity": code_identity,
+                    }
+                    if stage_status == "completed"
+                    else None,
                 )
-                manifest.record_cache(
-                    "scan-stats", _scan_stats_cache_metadata(context, config)
-                )
+                if stage_status == "completed":
+                    manifest.record_cache(
+                        "scan-stats",
+                        {**_scan_stats_cache_metadata(context, config), "code_identity": code_identity},
+                    )
+                    _deactivate_excluded_downstream_records(
+                        manifest, "scan-stats", config, selected_stages
+                    )
             elif stage == "scan-labels":
                 if stage in effective_forced_stages or not _valid_neutral_label_artifact(
                     paths.labels, existing, artifacts["flows"], context, config
@@ -319,16 +410,31 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 artifacts["scan-labels"] = paths.labels
                 manifest.record_stage("scan-labels", stage_status)
                 manifest.record_artifact(
-                    "flow_labels", paths.labels, _csv_row_count(paths.labels)
+                    "flow_labels",
+                    paths.labels,
+                    _csv_row_count(paths.labels),
+                    {
+                        "flow_fingerprint": flow_fingerprint(
+                            context.sha256, config, FLOW_SCHEMA_VERSION
+                        ),
+                        "code_identity": code_identity,
+                    }
+                    if stage_status == "completed"
+                    else None,
                 )
-                manifest.record_cache(
-                    "scan-labels", _neutral_label_cache_metadata(context, config)
-                )
+                if stage_status == "completed":
+                    manifest.record_cache(
+                        "scan-labels",
+                        {**_neutral_label_cache_metadata(context, config), "code_identity": code_identity},
+                    )
             elif stage == "prefixes":
-                if stage in forced_stages or not _valid_run_artifact(
-                    paths.prefixes, existing, "prefixes", config
+                aguri_path = artifacts["aguri"]
+                prefix_producer = _prefix_artifact_producer(
+                    context, config, aguri_path, code_identity
+                )
+                if stage in effective_forced_stages or not _valid_run_artifact(
+                    paths.prefixes, existing, "prefixes", config, prefix_producer
                 ):
-                    aguri_path = artifacts["aguri"]
                     if _is_legacy(config):
                         run_legacy_prefix_stage(
                             artifacts["flows"], aguri_path, config, paths.prefixes
@@ -341,11 +447,23 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 artifacts["prefixes"] = paths.prefixes
                 manifest.record_stage("prefixes", stage_status)
                 manifest.record_artifact(
-                    "prefixes", paths.prefixes, _csv_row_count(paths.prefixes)
+                    "prefixes",
+                    paths.prefixes,
+                    _csv_row_count(paths.prefixes),
+                    prefix_producer
+                    if stage_status == "completed"
+                    else None,
                 )
+                if stage_status == "completed":
+                    _deactivate_excluded_downstream_records(
+                        manifest, "prefixes", config, selected_stages
+                    )
             elif stage == "membership":
-                if stage in forced_stages or not _valid_run_artifact(
-                    paths.membership, existing, "membership", config
+                membership_producer = _membership_artifact_producer(
+                    context, config, paths.prefixes, code_identity
+                )
+                if stage in effective_forced_stages or not _valid_run_artifact(
+                    paths.membership, existing, "membership", config, membership_producer
                 ):
                     _write_membership(
                         artifacts["flows"], artifacts["prefixes"], paths.membership
@@ -359,6 +477,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     "flow_prefix_membership",
                     paths.membership,
                     _csv_row_count(paths.membership),
+                    membership_producer
+                    if stage_status == "completed"
+                    else None,
                 )
 
         manifest.record_stage("manifest", "completed")
@@ -474,7 +595,8 @@ def _ensure_run_identity(
     existing_sha = existing_input.get("sha256")
     existing_config_hash = (existing.get("config") or {}).get("hash")
     mismatches: list[str] = []
-    if context.sha256 and existing_sha != context.sha256:
+    input_was_never_resolved = existing.get("status") == "failed" and existing.get("input") is None
+    if context.sha256 and existing_sha != context.sha256 and not input_was_never_resolved:
         mismatches.append(
             f"existing input_sha256={existing_sha!r}; requested input_sha256={context.sha256!r}"
         )
@@ -513,6 +635,24 @@ def _pipeline_stages(config: ExperimentConfig) -> tuple[str, ...]:
     return M0_M4_STAGES
 
 
+def _deactivate_excluded_downstream_records(
+    manifest: RunManifest,
+    stage: str,
+    config: ExperimentConfig,
+    selected_stages: tuple[str, ...],
+) -> None:
+    downstream = dict(DOWNSTREAM_RUN_RECORDS.get(stage, {}))
+    if stage == "flows" and _is_legacy(config):
+        downstream["prefixes"] = (frozenset(("prefixes",)), frozenset())
+    artifacts: set[str] = set()
+    caches: set[str] = set()
+    for downstream_stage, (stage_artifacts, stage_caches) in downstream.items():
+        if downstream_stage not in selected_stages:
+            artifacts.update(stage_artifacts)
+            caches.update(stage_caches)
+    manifest.deactivate_records(artifacts=artifacts, caches=caches)
+
+
 def _stage_dependencies(config: ExperimentConfig) -> dict[str, tuple[str, ...]]:
     return LEGACY_STAGE_DEPENDENCIES if _is_legacy(config) else STAGE_DEPENDENCIES
 
@@ -541,6 +681,12 @@ def _existing_artifacts(
         Path(flow_path), flow_artifact.get("row_count"), FLOW_COLUMNS
     ):
         artifacts["flows"] = Path(flow_path)
+    aguri_artifact = ((existing.get("artifacts") or {}).get("aguri_candidates") or {})
+    aguri_path = aguri_artifact.get("path")
+    if isinstance(aguri_path, str) and _valid_csv_artifact(
+        Path(aguri_path), aguri_artifact.get("row_count"), AGURI_CANDIDATE_COLUMNS
+    ):
+        artifacts["aguri"] = Path(aguri_path)
     for manifest_name, stage_name in (
         ("flow_labels", "scan-labels"),
         ("prefixes", "prefixes"),
@@ -579,15 +725,24 @@ def _require_omitted_dependencies(
     selected: tuple[str, ...],
     artifacts: dict[str, Path],
     config: ExperimentConfig,
+    existing: dict[str, Any] | None,
+    context: InputContext,
 ) -> None:
     missing = [
         dependency
         for dependency in _stage_dependencies(config)[stage]
-        if dependency not in selected and dependency not in artifacts
+        if dependency not in selected
+        and (
+            dependency not in artifacts
+            or not _valid_omitted_dependency(
+                dependency, artifacts, existing, context, config
+            )
+        )
     ]
     if missing:
         raise MissingUpstreamArtifactError(
-            f"{stage} requires upstream artifacts excluded by --from: {', '.join(missing)}"
+            f"{stage} requires current upstream artifacts excluded by --from: "
+            + ", ".join(missing)
         )
 
 
@@ -604,13 +759,21 @@ def _planned_decisions(
     _add_valid_dataset_cache_artifacts(existing_artifacts, context, config)
     decisions: list[tuple[str, str]] = []
     effective_forced = set(forced)
+    code_identity = _code_identity()
     for stage in selected:
         if stage == "input":
             decision = "reuse" if context.sha256 else "execute"
         elif stage == "flows":
             decision = "reuse" if stage not in effective_forced and "flows" in existing_artifacts else "execute"
+            if decision == "execute":
+                effective_forced.update(
+                    {"scan-stats", "scan-labels", "membership"}
+                    | ({"prefixes"} if _is_legacy(config) else set())
+                )
         elif stage == "aguri":
             decision = "reuse" if stage not in effective_forced and "aguri" in existing_artifacts else "execute"
+            if decision == "execute":
+                effective_forced.update({"prefixes", "membership"})
         elif stage == "scan-stats":
             decision = (
                 "reuse"
@@ -631,17 +794,33 @@ def _planned_decisions(
                 else "execute"
             )
         elif stage == "prefixes":
+            aguri_path = existing_artifacts.get("aguri")
             decision = (
                 "reuse"
                 if stage not in effective_forced
-                and _valid_run_artifact(paths.prefixes, existing, "prefixes", config)
+                and aguri_path is not None
+                and _valid_run_artifact(
+                    paths.prefixes,
+                    existing,
+                    "prefixes",
+                    config,
+                    _prefix_artifact_producer(context, config, aguri_path, code_identity),
+                )
                 else "execute"
             )
         else:
             decision = (
                 "reuse"
                 if stage not in effective_forced
-                and _valid_run_artifact(paths.membership, existing, "membership", config)
+                and _valid_run_artifact(
+                    paths.membership,
+                    existing,
+                    "membership",
+                    config,
+                    _membership_artifact_producer(
+                        context, config, paths.prefixes, code_identity
+                    ),
+                )
                 else "execute"
             )
         decisions.append((stage, decision))
@@ -694,7 +873,9 @@ def _inspect_aguri_cache_if_available(
         return None
 
 
-def _record_aguri_cache(manifest: RunManifest, candidates_path: Path) -> None:
+def _record_aguri_cache(
+    manifest: RunManifest, candidates_path: Path, producer: dict[str, Any]
+) -> None:
     manifest_path = candidates_path.parent / "aguri_manifest.json"
     try:
         aguri_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -704,7 +885,11 @@ def _record_aguri_cache(manifest: RunManifest, candidates_path: Path) -> None:
     if isinstance(fingerprint, str):
         manifest.record_cache(
             "aguri",
-            {"fingerprint": fingerprint, "manifest_path": str(manifest_path)},
+            {
+                "fingerprint": fingerprint,
+                "manifest_path": str(manifest_path),
+                "producer": producer,
+            },
         )
 
 
@@ -723,6 +908,7 @@ def _valid_run_artifact(
     existing: dict[str, Any] | None,
     stage: str,
     config: ExperimentConfig,
+    expected_producer: dict[str, Any] | None = None,
 ) -> bool:
     artifact_name = {
         "scan-labels": "flow_labels",
@@ -730,9 +916,131 @@ def _valid_run_artifact(
         "membership": "flow_prefix_membership",
     }[stage]
     artifact = ((existing or {}).get("artifacts") or {}).get(artifact_name) or {}
-    return _valid_csv_artifact(
+    is_valid = _valid_csv_artifact(
         path, artifact.get("row_count"), _run_artifact_columns(stage, config)
     )
+    if not is_valid:
+        return False
+    return expected_producer is None or artifact.get("producer") == expected_producer
+
+
+def _reuse_or_produce_artifact_producer(
+    existing: dict[str, Any] | None,
+    artifact_name: str,
+    cache_producer: dict[str, Any],
+    producing_code_identity: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if producing_code_identity is not None:
+        return {**cache_producer, "code_identity": producing_code_identity}
+    existing_producer = (((existing or {}).get("artifacts") or {}).get(artifact_name) or {}).get(
+        "producer"
+    )
+    if isinstance(existing_producer, dict) and all(
+        existing_producer.get(key) == value for key, value in cache_producer.items()
+    ):
+        return existing_producer
+    return cache_producer
+
+
+def _cache_manifest_producer(path: Path, *, fingerprint_key: str) -> dict[str, Any]:
+    manifest_path = path.parent / (
+        "flow_manifest.json" if fingerprint_key == "flow_fingerprint" else "aguri_manifest.json"
+    )
+    producer: dict[str, Any] = {
+        "cache_manifest_path": str(manifest_path),
+        "cache_manifest_sha256": sha256_file(manifest_path) if manifest_path.is_file() else None,
+        fingerprint_key: None,
+    }
+    if not manifest_path.is_file():
+        return producer
+    try:
+        cache_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return producer
+    fingerprint = cache_manifest.get("fingerprint")
+    if isinstance(fingerprint, str):
+        producer[fingerprint_key] = fingerprint
+    return producer
+
+
+def _flow_artifact_producer(flows_path: Path) -> dict[str, Any]:
+    return _cache_manifest_producer(flows_path, fingerprint_key="flow_fingerprint")
+
+
+def _aguri_artifact_producer(candidates_path: Path) -> dict[str, Any]:
+    producer = _cache_manifest_producer(
+        candidates_path, fingerprint_key="aguri_fingerprint"
+    )
+    producer["aguri_candidates_sha256"] = sha256_file(candidates_path)
+    return producer
+
+
+def _valid_omitted_dependency(
+    dependency: str,
+    artifacts: dict[str, Path],
+    existing: dict[str, Any] | None,
+    context: InputContext,
+    config: ExperimentConfig,
+) -> bool:
+    manifest_artifacts = (existing or {}).get("artifacts") or {}
+    if dependency == "flows":
+        producer = (manifest_artifacts.get("flows") or {}).get("producer")
+        return isinstance(producer, dict) and producer.get("flow_fingerprint") == flow_fingerprint(
+            context.sha256, config, FLOW_SCHEMA_VERSION
+        )
+    if dependency == "aguri":
+        producer = (manifest_artifacts.get("aguri_candidates") or {}).get("producer")
+        expected = _aguri_artifact_producer(artifacts["aguri"])
+        return isinstance(producer, dict) and all(
+            producer.get(key) == expected[key]
+            for key in ("aguri_fingerprint", "aguri_candidates_sha256")
+        )
+    if dependency == "prefixes":
+        producer = (manifest_artifacts.get("prefixes") or {}).get("producer")
+        if not isinstance(producer, dict) or "aguri" not in artifacts:
+            return False
+        aguri_producer = _aguri_artifact_producer(artifacts["aguri"])
+        return (
+            producer.get("aguri_fingerprint") == aguri_producer["aguri_fingerprint"]
+            and producer.get("aguri_candidates_sha256")
+            == aguri_producer["aguri_candidates_sha256"]
+            and (
+                not _is_legacy(config)
+                or producer.get("flow_fingerprint")
+                == flow_fingerprint(context.sha256, config, FLOW_SCHEMA_VERSION)
+            )
+        )
+    return True
+
+
+def _prefix_artifact_producer(
+    context: InputContext,
+    config: ExperimentConfig,
+    aguri_path: Path,
+    code_identity: dict[str, Any],
+) -> dict[str, Any]:
+    aguri_producer = _aguri_artifact_producer(aguri_path)
+    return {
+        "flow_fingerprint": flow_fingerprint(context.sha256, config, FLOW_SCHEMA_VERSION)
+        if _is_legacy(config)
+        else None,
+        "aguri_fingerprint": aguri_producer["aguri_fingerprint"],
+        "aguri_candidates_sha256": aguri_producer["aguri_candidates_sha256"],
+        "code_identity": code_identity,
+    }
+
+
+def _membership_artifact_producer(
+    context: InputContext,
+    config: ExperimentConfig,
+    prefixes_path: Path,
+    code_identity: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "flow_fingerprint": flow_fingerprint(context.sha256, config, FLOW_SCHEMA_VERSION),
+        "prefixes_sha256": sha256_file(prefixes_path),
+        "code_identity": code_identity,
+    }
 
 
 def _valid_csv_artifact(
@@ -814,9 +1122,10 @@ def _valid_neutral_label_artifact(
     config: ExperimentConfig,
 ) -> bool:
     artifact = ((existing or {}).get("artifacts") or {}).get("flow_labels") or {}
-    if (existing or {}).get("cache", {}).get(
-        "scan-labels"
-    ) != _neutral_label_cache_metadata(context, config) or not _valid_csv_artifact(
+    if not _cache_metadata_matches(
+        (existing or {}).get("cache", {}).get("scan-labels"),
+        _neutral_label_cache_metadata(context, config),
+    ) or not _valid_csv_artifact(
         path, artifact.get("row_count"), FLOW_LABEL_COLUMNS
     ):
         return False
@@ -901,8 +1210,8 @@ def _valid_scan_stats_artifacts(
     windows = artifacts.get("source_scan_windows") or {}
     summary = artifacts.get("source_scan_summary") or {}
     cache = (existing or {}).get("cache") or {}
-    return cache.get("scan-stats") == _scan_stats_cache_metadata(
-        context, config
+    return _cache_metadata_matches(
+        cache.get("scan-stats"), _scan_stats_cache_metadata(context, config)
     ) and _valid_csv_artifact(
         paths.scan_windows, windows.get("row_count"), SCAN_WINDOW_COLUMNS
     ) and _valid_csv_artifact(
@@ -921,8 +1230,10 @@ def _valid_scan_stats_artifacts_from_manifest(
     return (
         isinstance(windows_path, str)
         and isinstance(summary_path, str)
-        and (existing.get("cache") or {}).get("scan-stats")
-        == _scan_stats_cache_metadata(context, config)
+        and _cache_metadata_matches(
+            (existing.get("cache") or {}).get("scan-stats"),
+            _scan_stats_cache_metadata(context, config),
+        )
         and _valid_csv_artifact(Path(windows_path), windows.get("row_count"), SCAN_WINDOW_COLUMNS)
         and _valid_csv_artifact(Path(summary_path), summary.get("row_count"), SCAN_SUMMARY_COLUMNS)
     )
@@ -931,6 +1242,12 @@ def _valid_scan_stats_artifacts_from_manifest(
 def _csv_row_count(path: Path) -> int:
     with path.open(encoding="utf-8", newline="") as csv_file:
         return sum(1 for _ in csv.reader(csv_file)) - 1
+
+
+def _cache_metadata_matches(recorded: object, expected: dict[str, str]) -> bool:
+    return isinstance(recorded, dict) and all(
+        recorded.get(key) == value for key, value in expected.items()
+    )
 
 
 def _git_commit() -> str | None:
@@ -943,6 +1260,27 @@ def _git_commit() -> str | None:
         text=True,
     )
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _code_identity() -> dict[str, Any]:
+    """Capture source identity for each invocation without relabeling prior outputs."""
+    repository_root = Path(__file__).resolve().parents[2]
+    digest = hashlib.sha256()
+    for source_path in sorted((repository_root / "src" / "mawi_global_analysis").glob("*.py")):
+        digest.update(source_path.relative_to(repository_root).as_posix().encode("utf-8"))
+        digest.update(source_path.read_bytes())
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=repository_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return {
+        "git_commit": _git_commit(),
+        "source_hash": digest.hexdigest(),
+        "dirty": bool(dirty.stdout.strip()) if dirty.returncode == 0 else None,
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:

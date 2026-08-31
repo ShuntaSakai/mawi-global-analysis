@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,9 +16,12 @@ def _timestamp() -> str:
 class RunManifest:
     """Persist a run manifest after every state-changing operation."""
 
-    def __init__(self, path: Path, data: dict[str, Any]) -> None:
+    def __init__(
+        self, path: Path, data: dict[str, Any], current_code_identity: dict[str, Any] | None = None
+    ) -> None:
         self.path = path
         self.data = data
+        self.current_code_identity = current_code_identity
 
     @classmethod
     def start(
@@ -28,6 +32,7 @@ class RunManifest:
         config_text: str,
         config_hash: str,
         git_commit: str | None,
+        code_identity: dict[str, Any] | None = None,
     ) -> "RunManifest":
         """Create and persist a manifest in its initial running state."""
         now = _timestamp()
@@ -42,6 +47,7 @@ class RunManifest:
                     "hash": config_hash,
                 },
                 "git_commit": git_commit,
+                "code_identity": code_identity,
                 "input": None,
                 "stages": [],
                 "artifacts": {},
@@ -51,6 +57,7 @@ class RunManifest:
                         "started_at": now,
                         "finished_at": None,
                         "git_commit": git_commit,
+                        "code_identity": code_identity,
                         "status": "running",
                         "error": None,
                     }
@@ -62,16 +69,19 @@ class RunManifest:
             },
         )
         manifest._write()
+        manifest.current_code_identity = code_identity
         return manifest
 
     @classmethod
-    def resume(cls, path: Path, git_commit: str | None) -> "RunManifest":
+    def resume(
+        cls, path: Path, git_commit: str | None, code_identity: dict[str, Any] | None = None
+    ) -> "RunManifest":
         """Reopen an identity-checked manifest while retaining its prior evidence."""
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise ValueError(f"unreadable run manifest: {path}") from error
-        manifest = cls(path, data)
+        manifest = cls(path, data, code_identity)
         manifest.data.setdefault("cache", {})
         manifest.data.setdefault(
             "invocations",
@@ -80,6 +90,7 @@ class RunManifest:
                     "started_at": manifest.data.get("started_at"),
                     "finished_at": manifest.data.get("finished_at"),
                     "git_commit": manifest.data.get("git_commit"),
+                    "code_identity": manifest.data.get("code_identity"),
                     "status": manifest.data.get("status"),
                     "error": manifest.data.get("error"),
                 }
@@ -89,12 +100,12 @@ class RunManifest:
         manifest.data["status"] = "running"
         manifest.data["error"] = None
         manifest.data["finished_at"] = None
-        manifest.data["git_commit"] = git_commit
         manifest.data["invocations"].append(
             {
                 "started_at": now,
                 "finished_at": None,
                 "git_commit": git_commit,
+                "code_identity": code_identity,
                 "status": "running",
                 "error": None,
             }
@@ -117,9 +128,20 @@ class RunManifest:
         self.data["stages"].append({"name": name, "status": status})
         self._write()
 
-    def record_artifact(self, name: str, path: Path, row_count: int | None) -> None:
+    def record_artifact(
+        self,
+        name: str,
+        path: Path,
+        row_count: int | None,
+        producer: dict[str, Any] | None = None,
+    ) -> None:
         """Register an output artifact and its row count when applicable."""
         artifact: dict[str, Any] = {"path": str(path), "row_count": row_count}
+        existing = self.data["artifacts"].get(name)
+        if producer is not None:
+            artifact["producer"] = producer
+        elif isinstance(existing, dict) and "producer" in existing:
+            artifact["producer"] = existing["producer"]
         self.data["artifacts"][name] = artifact
         self._write()
 
@@ -127,6 +149,23 @@ class RunManifest:
         """Record the semantic cache identity used by a pipeline stage."""
         self.data.setdefault("cache", {})[name] = details
         self._write()
+
+    def deactivate_records(
+        self,
+        *,
+        artifacts: Iterable[str] = (),
+        caches: Iterable[str] = (),
+    ) -> None:
+        """Remove invalidated outputs from the active run inventory."""
+        artifact_records = self.data.setdefault("artifacts", {})
+        cache_records = self.data.setdefault("cache", {})
+        changed = False
+        for name in artifacts:
+            changed = artifact_records.pop(name, None) is not None or changed
+        for name in caches:
+            changed = cache_records.pop(name, None) is not None or changed
+        if changed:
+            self._write()
 
     def finalize_success(self) -> None:
         """Mark the run as successful and persist its completion time."""
