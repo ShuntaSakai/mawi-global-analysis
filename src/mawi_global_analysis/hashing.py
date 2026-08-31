@@ -38,7 +38,7 @@ def flow_generation_config(cfg: ExperimentConfig) -> dict[str, Any]:
 
 
 def flow_fingerprint(
-    input_sha256: str, cfg: ExperimentConfig, schema_version: str = "flows-v2"
+    input_sha256: str, cfg: ExperimentConfig, schema_version: str = "flows-v3"
 ) -> str:
     """Identify a canonical-flow cache without including run interpretation."""
     return stable_json_hash(

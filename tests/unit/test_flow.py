@@ -14,6 +14,7 @@ from mawi_global_analysis.flow import FlowKey, PcapParseError, parse_pcap
 FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "pcaps"
 PCAP_PATH = FIXTURE_DIR / "tcp_patterns.pcap"
 GZIP_PATH = FIXTURE_DIR / "tcp_patterns.pcap.gz"
+TRUNCATED_IPV6_FRAGMENT_PATH = FIXTURE_DIR / "capture_truncated_ipv6_fragment.pcap"
 
 
 def _write_pcapng(source: Path, destination: Path) -> None:
@@ -72,6 +73,26 @@ def test_pcapng_packet_caplen_exceeding_original_length_is_fatal(
 
     with pytest.raises(PcapParseError, match="caplen"):
         parse_pcap(capture, timeout=None)
+
+
+def test_pcap_packet_caplen_exceeding_original_length_is_fatal(tmp_path: Path) -> None:
+    """PCAP record length corruption remains fatal despite snaplen support."""
+    capture = tmp_path / "oversized-caplen.pcap"
+    contents = bytearray(PCAP_PATH.read_bytes())
+    caplen = struct.unpack_from("<I", contents, 24 + 8)[0]
+    struct.pack_into("<I", contents, 24 + 12, caplen - 1)
+    capture.write_bytes(contents)
+
+    with pytest.raises(PcapParseError, match="caplen"):
+        parse_pcap(capture, timeout=None)
+
+
+def test_capture_truncated_ipv6_fragment_is_skipped_and_following_flow_is_retained() -> None:
+    """A complete record with an unavailable IPv6 fragment header is not a flow."""
+    rows = parse_pcap(TRUNCATED_IPV6_FRAGMENT_PATH, timeout=None)
+
+    assert len(rows) == 1
+    assert rows[0]["protocol"] == 6
 
 
 def test_reverse_packets_share_one_bidirectional_flow_key() -> None:

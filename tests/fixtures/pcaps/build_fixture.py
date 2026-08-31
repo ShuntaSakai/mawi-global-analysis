@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import socket
+import struct
 from pathlib import Path
 
 import dpkt
@@ -12,6 +13,7 @@ import dpkt
 FIXTURE_DIR = Path(__file__).resolve().parent
 PCAP_PATH = FIXTURE_DIR / "tcp_patterns.pcap"
 GZIP_PATH = FIXTURE_DIR / "tcp_patterns.pcap.gz"
+TRUNCATED_IPV6_FRAGMENT_PATH = FIXTURE_DIR / "capture_truncated_ipv6_fragment.pcap"
 
 CLIENT_MAC = b"\x00\x11\x22\x33\x44\x55"
 SERVER_MAC = b"\x66\x77\x88\x99\xaa\xbb"
@@ -132,6 +134,27 @@ def fixture_packets() -> list[tuple[float, bytes]]:
     ]
 
 
+def capture_truncated_ipv6_fragment_packets() -> list[tuple[float, bytes]]:
+    """Return a normal TCP packet plus an IPv6 fragment truncated at snaplen."""
+    valid_frame = fixture_packets()[0][1]
+    ipv6_header = struct.pack(
+        "!IHBB16s16s",
+        0x60000000,
+        1312,
+        44,
+        64,
+        b"\x20\x01\x0d\xb8" + b"\x00" * 12,
+        b"\x20\x01\x0d\xb8" + b"\x00" * 11 + b"\x01",
+    )
+    truncated_fragment = (
+        CLIENT_MAC
+        + SERVER_MAC
+        + struct.pack("!H", dpkt.ethernet.ETH_TYPE_IP6)
+        + ipv6_header
+    )
+    return [(1.0, valid_frame), (2.0, truncated_fragment)]
+
+
 def build_fixture() -> None:
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     with PCAP_PATH.open("wb") as output:
@@ -143,6 +166,17 @@ def build_fixture() -> None:
     with PCAP_PATH.open("rb") as source, GZIP_PATH.open("wb") as raw_output:
         with gzip.GzipFile(fileobj=raw_output, mode="wb", mtime=0) as compressed:
             compressed.write(source.read())
+
+    with TRUNCATED_IPV6_FRAGMENT_PATH.open("wb") as output:
+        writer = dpkt.pcap.Writer(output)
+        for timestamp, frame in capture_truncated_ipv6_fragment_packets():
+            writer.writepkt(frame, ts=timestamp)
+        writer.close()
+    capture = bytearray(TRUNCATED_IPV6_FRAGMENT_PATH.read_bytes())
+    first_frame_length = len(capture_truncated_ipv6_fragment_packets()[0][1])
+    second_record_offset = 24 + 16 + first_frame_length
+    struct.pack_into("<I", capture, second_record_offset + 12, 1366)
+    TRUNCATED_IPV6_FRAGMENT_PATH.write_bytes(capture)
 
 
 if __name__ == "__main__":

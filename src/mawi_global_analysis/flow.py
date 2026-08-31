@@ -25,6 +25,22 @@ class PcapParseError(ValueError):
     """Raised when a capture cannot be trusted as a complete readable PCAP."""
 
 
+class _CaptureTruncatedUndecodable:
+    """Marks an IP packet that cannot supply a trustworthy 5-tuple."""
+
+
+_CAPTURE_TRUNCATED_UNDECODABLE = _CaptureTruncatedUndecodable()
+DecodedPacket = tuple[int, int, str, int, str, int, int, int, int | None]
+
+
+@dataclass(frozen=True)
+class FlowParseResult:
+    """Canonical flow rows and reproducible counts of skipped packet records."""
+
+    rows: list[dict[str, object]]
+    skipped_packet_counts: dict[str, int]
+
+
 @dataclass(frozen=True)
 class Endpoint:
     """One IP-and-port endpoint in a normalized flow key."""
@@ -258,7 +274,7 @@ def _open_capture(path: Path) -> AbstractContextManager[BinaryIO]:
 
 def _strict_pcap_packets(
     capture: BinaryIO, reader: dpkt.pcap.Reader
-) -> Iterator[tuple[float, bytes]]:
+) -> Iterator[tuple[float, bytes, int, int]]:
     """Iterate PCAP records while detecting short record headers and bodies."""
     packet_header_type = reader._Reader__ph  # type: ignore[attr-defined]
     packet_header_size = packet_header_type.__hdr_len__
@@ -281,6 +297,11 @@ def _strict_pcap_packets(
             raise PcapParseError(
                 f"malformed PCAP packet header at packet {packet_index}"
             ) from exc
+        if header.caplen > header.len:
+            raise PcapParseError(
+                f"malformed PCAP packet header at packet {packet_index}: "
+                f"caplen {header.caplen} exceeds original length {header.len}"
+            )
 
         frame = capture.read(header.caplen)
         if len(frame) != header.caplen:
@@ -289,7 +310,7 @@ def _strict_pcap_packets(
                 f"expected {header.caplen} bytes, got {len(frame)}"
             )
         timestamp = float(header.tv_sec + (header.tv_usec / divisor))
-        yield timestamp, frame
+        yield timestamp, frame, header.caplen, header.len
 
 
 def _validate_pcapng_packet_lengths(
@@ -329,7 +350,7 @@ def _validate_pcapng_packet_lengths(
 
 def _strict_pcapng_packets(
     capture: BinaryIO, reader: dpkt.pcapng.Reader
-) -> Iterator[tuple[float, bytes]]:
+) -> Iterator[tuple[float, bytes, int, int]]:
     """Iterate PCAPNG records while detecting truncated or malformed blocks."""
     little_endian = reader._Reader__le  # type: ignore[attr-defined]
     byte_order = "<" if little_endian else ">"
@@ -381,12 +402,17 @@ def _strict_pcapng_packets(
         timestamp = timestamp_offset + (
             ((packet_block.ts_high << 32) | packet_block.ts_low) / divisor
         )
-        yield timestamp, packet_block.pkt_data
+        yield (
+            timestamp,
+            packet_block.pkt_data,
+            packet_block.caplen,
+            packet_block.len,
+        )
 
 
 def _decode_packet(
-    frame: bytes, packet_index: int
-) -> tuple[int, int, str, int, str, int, int, int, int | None] | None:
+    frame: bytes, packet_index: int, *, capture_truncated: bool
+) -> DecodedPacket | _CaptureTruncatedUndecodable | None:
     try:
         ethernet = dpkt.ethernet.Ethernet(frame)
     except (dpkt.dpkt.Error, ValueError, IndexError) as exc:
@@ -397,6 +423,8 @@ def _decode_packet(
     network = ethernet.data
     if not isinstance(network, (dpkt.ip.IP, dpkt.ip6.IP6)):
         if ethernet.type in (dpkt.ethernet.ETH_TYPE_IP, dpkt.ethernet.ETH_TYPE_IP6):
+            if capture_truncated:
+                return _CAPTURE_TRUNCATED_UNDECODABLE
             raise PcapParseError(
                 f"malformed IP packet at packet {packet_index}"
             )
@@ -408,10 +436,16 @@ def _decode_packet(
         protocol = network.p if isinstance(network, dpkt.ip.IP) else network.nxt
         if protocol in SUPPORTED_PROTOCOLS:
             if isinstance(network, dpkt.ip.IP) and network.offset:
+                if capture_truncated:
+                    return _CAPTURE_TRUNCATED_UNDECODABLE
                 return None
+            if capture_truncated:
+                return _CAPTURE_TRUNCATED_UNDECODABLE
             raise PcapParseError(
                 f"malformed TCP/UDP packet at packet {packet_index}"
             )
+        if capture_truncated:
+            return _CAPTURE_TRUNCATED_UNDECODABLE
         return None
 
     protocol = TCP_PROTOCOL if isinstance(transport, dpkt.tcp.TCP) else UDP_PROTOCOL
@@ -437,11 +471,11 @@ def _decode_packet(
     )
 
 
-def parse_pcap(
+def parse_pcap_with_provenance(
     path: Path,
     timeout: float | None,
     protocols: tuple[int, ...] = SUPPORTED_PROTOCOLS,
-) -> list[dict[str, object]]:
+) -> FlowParseResult:
     """Aggregate an Ethernet PCAP into first-direction canonical flow rows.
 
     When enabled, an inactivity gap strictly greater than ``timeout`` starts a
@@ -456,6 +490,7 @@ def parse_pcap(
     capture_path = Path(path)
     active_flows: dict[FlowKey, _FlowAccumulator] = {}
     completed_flows: list[_FlowAccumulator] = []
+    skipped_packet_counts: dict[str, int] = {}
     next_flow_id = 1
 
     try:
@@ -479,11 +514,23 @@ def parse_pcap(
                     f"{reader.datalink()}; Ethernet is required"
                 )
 
-            for packet_index, (timestamp, frame) in enumerate(
-                packets, start=1
-            ):
-                decoded = _decode_packet(frame, packet_index)
-                if decoded is None:
+            for packet_index, packet in enumerate(packets, start=1):
+                timestamp, frame, captured_length, original_length = packet
+                decoded = _decode_packet(
+                    frame,
+                    packet_index,
+                    capture_truncated=captured_length < original_length,
+                )
+                if decoded is None or isinstance(
+                    decoded, _CaptureTruncatedUndecodable
+                ):
+                    if isinstance(decoded, _CaptureTruncatedUndecodable):
+                        skipped_packet_counts["capture_truncated_undecodable"] = (
+                            skipped_packet_counts.get(
+                                "capture_truncated_undecodable", 0
+                            )
+                            + 1
+                        )
                     continue
                 (
                     ip_version,
@@ -540,7 +587,19 @@ def parse_pcap(
     except (OSError, EOFError, gzip.BadGzipFile) as exc:
         raise PcapParseError(f"unreadable PCAP: {capture_path}: {exc}") from exc
 
-    return [flow.as_row() for flow in [*completed_flows, *active_flows.values()]]
+    return FlowParseResult(
+        rows=[flow.as_row() for flow in [*completed_flows, *active_flows.values()]],
+        skipped_packet_counts=skipped_packet_counts,
+    )
+
+
+def parse_pcap(
+    path: Path,
+    timeout: float | None,
+    protocols: tuple[int, ...] = SUPPORTED_PROTOCOLS,
+) -> list[dict[str, object]]:
+    """Aggregate an Ethernet PCAP into first-direction canonical flow rows."""
+    return parse_pcap_with_provenance(path, timeout, protocols).rows
 
 
 def capture_start_timestamp(path: Path) -> float | None:

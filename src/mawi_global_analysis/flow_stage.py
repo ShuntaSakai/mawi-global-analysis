@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from mawi_global_analysis.config import ExperimentConfig
-from mawi_global_analysis.flow import TCP_PROTOCOL, parse_pcap
+from mawi_global_analysis.flow import TCP_PROTOCOL, parse_pcap_with_provenance
 from mawi_global_analysis.hashing import flow_fingerprint, flow_generation_config
 from mawi_global_analysis.models import InputContext
 from mawi_global_analysis.scan_patterns import classify_observed_tcp_pattern
 
 
-FLOW_SCHEMA_VERSION = "flows-v2"
+FLOW_SCHEMA_VERSION = "flows-v3"
 FLOW_COLUMNS = (
     "flow_id",
     "ip_version",
@@ -98,12 +98,12 @@ def run_flow_stage(
         _validate_cached_flows(flows_path, expected_row_count)
         return flows_path
 
-    rows = parse_pcap(
+    parse_result = parse_pcap_with_provenance(
         ctx.path,
         timeout=cfg.flow.inactive_timeout_seconds,
         protocols=tuple(_PROTOCOL_NUMBERS[name] for name in flow_config["protocols"]),
     )
-    rows_with_patterns = [_add_observed_pattern(row) for row in rows]
+    rows_with_patterns = [_add_observed_pattern(row) for row in parse_result.rows]
     stage_dir.mkdir(parents=True, exist_ok=True)
     _write_csv_atomically(flows_path, rows_with_patterns)
     _write_json_atomically(
@@ -112,6 +112,7 @@ def run_flow_stage(
             "input_sha256": ctx.sha256,
             "fingerprint": fingerprint,
             "row_count": len(rows_with_patterns),
+            "skipped_packet_counts": parse_result.skipped_packet_counts,
             "flow_config": flow_config,
             "schema_version": FLOW_SCHEMA_VERSION,
         },
@@ -165,6 +166,16 @@ def _validate_cache_manifest(
     if not isinstance(row_count, int) or row_count < 0:
         raise FlowCacheValidationError(
             f"flow cache manifest has invalid row_count: {manifest_path}"
+        )
+    skipped_packet_counts = manifest.get("skipped_packet_counts")
+    if not isinstance(skipped_packet_counts, dict) or any(
+        not isinstance(reason, str)
+        or not isinstance(count, int)
+        or count < 0
+        for reason, count in skipped_packet_counts.items()
+    ):
+        raise FlowCacheValidationError(
+            f"flow cache manifest has invalid skip provenance: {manifest_path}"
         )
     return row_count
 

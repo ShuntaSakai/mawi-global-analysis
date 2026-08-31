@@ -49,7 +49,7 @@ def test_flow_schema_version_bumps_when_canonical_columns_change() -> None:
     """Legacy TCP flag totals are canonical facts and must invalidate old caches."""
     baseline = load_config(ROOT / "configs" / "baseline.yaml")
 
-    assert FLOW_SCHEMA_VERSION == "flows-v2"
+    assert FLOW_SCHEMA_VERSION == "flows-v3"
     assert flow_fingerprint("a" * 64, baseline, "flows-v1") != flow_fingerprint(
-        "a" * 64, baseline, "flows-v2"
+        "a" * 64, baseline, "flows-v3"
     )
