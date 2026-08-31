@@ -308,7 +308,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 manifest.record_cache(
                     "flows", {**flow_metadata, "producer": flow_artifact_producer}
                 )
-                if not was_cached:
+                if not was_cached or _artifact_producer_rebound(
+                    existing, "flows", flow_artifact_producer
+                ):
                     _deactivate_excluded_downstream_records(
                         manifest, "flows", config, selected_stages
                     )
@@ -342,7 +344,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     aguri_artifact_producer,
                 )
                 _record_aguri_cache(manifest, aguri_path, aguri_artifact_producer)
-                if not aguri_reused:
+                if not aguri_reused or _artifact_producer_rebound(
+                    existing, "aguri_candidates", aguri_artifact_producer
+                ):
                     _deactivate_excluded_downstream_records(
                         manifest, "aguri", config, selected_stages
                     )
@@ -940,6 +944,18 @@ def _reuse_or_produce_artifact_producer(
     ):
         return existing_producer
     return cache_producer
+
+
+def _artifact_producer_rebound(
+    existing: dict[str, Any] | None,
+    artifact_name: str,
+    producer: dict[str, Any],
+) -> bool:
+    """Whether resuming selected a different upstream artifact producer."""
+    previous = (((existing or {}).get("artifacts") or {}).get(artifact_name) or {}).get(
+        "producer"
+    )
+    return isinstance(previous, dict) and previous != producer
 
 
 def _cache_manifest_producer(path: Path, *, fingerprint_key: str) -> dict[str, Any]:

@@ -615,6 +615,49 @@ def test_resumed_run_rebinds_a_newer_reused_flow_cache_producer(
     assert "code_identity" not in resumed["artifacts"]["flows"]["producer"]
 
 
+def test_reused_flow_rebind_rebuilds_included_dependents_and_deactivates_excluded_ones(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A shared-flow producer rebind cannot leave successful mixed provenance."""
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    assert pipeline.run_pipeline(_args()) == 0
+
+    import mawi_global_analysis.flow_stage as flow_stage
+
+    monkeypatch.setattr(pipeline, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    monkeypatch.setattr(flow_stage, "FLOW_SCHEMA_VERSION", "flows-v-next")
+    partial = ("--from", "flows", "--to", "flows")
+    assert pipeline.run_pipeline(_args(*partial, "--run-name", "new-flow-cache")) == 0
+
+    assert pipeline.run_pipeline(_args()) == 0
+    run_dir = tmp_path / "results" / "fixture" / "baseline"
+    rebuilt = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    statuses = _latest_stage_statuses(rebuilt)
+    assert statuses["flows"] == "reused"
+    assert statuses["scan-stats"] == "completed"
+    assert statuses["scan-labels"] == "completed"
+    assert statuses["membership"] == "completed"
+    load_run("fixture", "baseline", root=tmp_path)
+
+    monkeypatch.setattr(pipeline, "FLOW_SCHEMA_VERSION", "flows-v-third")
+    monkeypatch.setattr(flow_stage, "FLOW_SCHEMA_VERSION", "flows-v-third")
+    assert pipeline.run_pipeline(_args(*partial, "--run-name", "third-flow-cache")) == 0
+    assert pipeline.run_pipeline(_args("--to", "flows")) == 0
+
+    rebound = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert rebound["status"] == "success"
+    assert not {
+        "source_scan_windows",
+        "source_scan_summary",
+        "flow_labels",
+        "flow_prefix_membership",
+    } & set(rebound["artifacts"])
+    assert not {"scan-stats", "scan-labels"} & set(rebound["cache"])
+    with pytest.raises(FileNotFoundError, match="missing required artifact entry: flow_labels"):
+        load_run("fixture", "baseline", root=tmp_path)
+
+
 def test_executed_aguri_rebuilds_included_prefix_dependents(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -872,6 +915,44 @@ def test_resumed_run_rebinds_a_newer_reused_aguri_cache_producer(
     assert resumed["cache"]["aguri"]["manifest_path"] == expected["cache_manifest_path"]
     assert resumed["cache"]["aguri"]["fingerprint"] == expected["aguri_fingerprint"]
     assert "code_identity" not in resumed["artifacts"]["aguri_candidates"]["producer"]
+
+
+def test_reused_aguri_rebind_rebuilds_included_dependents_and_deactivates_excluded_ones(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A shared-Aguri producer rebind cannot leave successful mixed provenance."""
+    monkeypatch.chdir(tmp_path)
+    command, agurim = _configured_aguri_command(tmp_path, "aguri-rebind-invalidation")
+    assert pipeline.run_pipeline(pipeline.build_parser().parse_args(command)) == 0
+
+    partial = ("--from", "aguri", "--to", "aguri")
+    agurim.write_text(agurim.read_text(encoding="utf-8") + "# next cache\n", encoding="utf-8")
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args([*command, *partial, "--run-name", "new-aguri-cache"])
+    ) == 0
+
+    assert pipeline.run_pipeline(pipeline.build_parser().parse_args(command)) == 0
+    run_dir = tmp_path / "results" / "aguri-rebind-invalidation" / "baseline"
+    rebuilt = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    statuses = _latest_stage_statuses(rebuilt)
+    assert statuses["aguri"] == "reused"
+    assert statuses["prefixes"] == "completed"
+    assert statuses["membership"] == "completed"
+    load_run("aguri-rebind-invalidation", "baseline", root=tmp_path)
+
+    agurim.write_text(agurim.read_text(encoding="utf-8") + "# third cache\n", encoding="utf-8")
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args([*command, *partial, "--run-name", "third-aguri-cache"])
+    ) == 0
+    assert pipeline.run_pipeline(
+        pipeline.build_parser().parse_args([*command, "--to", "aguri"])
+    ) == 0
+
+    rebound = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert rebound["status"] == "success"
+    assert not {"prefixes", "flow_prefix_membership"} & set(rebound["artifacts"])
+    with pytest.raises(FileNotFoundError, match="missing required artifact entry: prefixes"):
+        load_run("aguri-rebind-invalidation", "baseline", root=tmp_path)
 
 
 def test_generated_aguri_supports_partial_prefixes_and_rejects_semantic_staleness(
