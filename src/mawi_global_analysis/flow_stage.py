@@ -7,10 +7,14 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any
 
 from mawi_global_analysis.config import ExperimentConfig
-from mawi_global_analysis.flow import TCP_PROTOCOL, parse_pcap_with_provenance
+from mawi_global_analysis.flow import (
+    TCP_PROTOCOL,
+    parse_pcap_accumulators_with_provenance,
+)
 from mawi_global_analysis.hashing import flow_fingerprint, flow_generation_config
 from mawi_global_analysis.models import InputContext
 from mawi_global_analysis.scan_patterns import classify_observed_tcp_pattern
@@ -98,20 +102,25 @@ def run_flow_stage(
         _validate_cached_flows(flows_path, expected_row_count)
         return flows_path
 
-    parse_result = parse_pcap_with_provenance(
+    parse_result = parse_pcap_accumulators_with_provenance(
         ctx.path,
         timeout=cfg.flow.inactive_timeout_seconds,
         protocols=tuple(_PROTOCOL_NUMBERS[name] for name in flow_config["protocols"]),
     )
-    rows_with_patterns = [_add_observed_pattern(row) for row in parse_result.rows]
     stage_dir.mkdir(parents=True, exist_ok=True)
-    _write_csv_atomically(flows_path, rows_with_patterns)
+    row_count = _write_csv_atomically(
+        flows_path,
+        (
+            _add_observed_pattern(flow.as_row())
+            for flow in parse_result.flows
+        ),
+    )
     _write_json_atomically(
         manifest_path,
         {
             "input_sha256": ctx.sha256,
             "fingerprint": fingerprint,
-            "row_count": len(rows_with_patterns),
+            "row_count": row_count,
             "skipped_packet_counts": parse_result.skipped_packet_counts,
             "flow_config": flow_config,
             "schema_version": FLOW_SCHEMA_VERSION,
@@ -127,13 +136,12 @@ def _flow_profile(flow_config: dict[str, Any]) -> str:
 
 
 def _add_observed_pattern(row: dict[str, object]) -> dict[str, object]:
-    completed_row = dict(row)
-    completed_row["observed_tcp_pattern"] = (
-        classify_observed_tcp_pattern(completed_row)
-        if completed_row["protocol"] == TCP_PROTOCOL
+    row["observed_tcp_pattern"] = (
+        classify_observed_tcp_pattern(row)
+        if row["protocol"] == TCP_PROTOCOL
         else "none"
     )
-    return completed_row
+    return row
 
 
 def _validate_cache_manifest(
@@ -211,7 +219,9 @@ def _validate_cached_flows(path: Path, expected_row_count: int) -> None:
         )
 
 
-def _write_csv_atomically(path: Path, rows: list[dict[str, object]]) -> None:
+def _write_csv_atomically(
+    path: Path, rows: Iterable[dict[str, object]]
+) -> int:
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -226,10 +236,14 @@ def _write_csv_atomically(path: Path, rows: list[dict[str, object]]) -> None:
             temporary_path = Path(output.name)
             writer = csv.DictWriter(output, fieldnames=FLOW_COLUMNS)
             writer.writeheader()
-            writer.writerows(rows)
+            row_count = 0
+            for row in rows:
+                writer.writerow(row)
+                row_count += 1
             output.flush()
             os.fsync(output.fileno())
         temporary_path.replace(path)
+        return row_count
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()

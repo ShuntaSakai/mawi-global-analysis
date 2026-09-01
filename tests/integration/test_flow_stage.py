@@ -72,6 +72,32 @@ def test_flow_stage_reuses_semantic_cache_and_records_canonical_provenance(
     assert all(row["byte_count"] == row["frame_byte_count"] for row in rows)
 
 
+def test_flow_stage_streams_fixture_rows_without_the_materializing_parser(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The cache writer consumes aggregated accumulators one row at a time."""
+    from mawi_global_analysis import flow_stage
+
+    monkeypatch.chdir(tmp_path)
+    context = InputContext(
+        dataset_id="fixture",
+        path=PCAP_PATH,
+        sha256=sha256_file(PCAP_PATH),
+        size_bytes=PCAP_PATH.stat().st_size,
+    )
+    config = load_config(ROOT / "configs" / "baseline.yaml")
+
+    assert not hasattr(flow_stage, "parse_pcap_with_provenance")
+
+    flows_path = flow_stage.run_flow_stage(context, config)
+
+    assert sha256_file(flows_path) == (
+        "d0c14db6a3bf8db3e7c710ddbb602d7f3609161d583613fdc478f96feb4fecbc"
+    )
+    manifest = json.loads((flows_path.parent / "flow_manifest.json").read_text())
+    assert manifest["row_count"] == 7
+
+
 def test_flow_stage_rejects_a_corrupted_cached_csv(
     tmp_path: Path, monkeypatch
 ) -> None:

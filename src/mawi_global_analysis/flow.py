@@ -41,7 +41,7 @@ class FlowParseResult:
     skipped_packet_counts: dict[str, int]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Endpoint:
     """One IP-and-port endpoint in a normalized flow key."""
 
@@ -49,7 +49,7 @@ class Endpoint:
     port: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FlowKey:
     """Direction-independent TCP/UDP 5-tuple key."""
 
@@ -82,7 +82,7 @@ class FlowKey:
         return cls(endpoint_a=first[2], endpoint_b=second[2], protocol=protocol)
 
 
-@dataclass
+@dataclass(slots=True)
 class _FlowAccumulator:
     flow_id: int
     ip_version: int
@@ -471,12 +471,20 @@ def _decode_packet(
     )
 
 
-def parse_pcap_with_provenance(
+@dataclass(frozen=True, slots=True)
+class _FlowAccumulatorParseResult:
+    """Aggregated flows before their rows are materialized for output."""
+
+    flows: list[_FlowAccumulator]
+    skipped_packet_counts: dict[str, int]
+
+
+def parse_pcap_accumulators_with_provenance(
     path: Path,
     timeout: float | None,
     protocols: tuple[int, ...] = SUPPORTED_PROTOCOLS,
-) -> FlowParseResult:
-    """Aggregate an Ethernet PCAP into first-direction canonical flow rows.
+) -> _FlowAccumulatorParseResult:
+    """Aggregate an Ethernet PCAP without materializing canonical row dictionaries.
 
     When enabled, an inactivity gap strictly greater than ``timeout`` starts a
     new instance of the same normalized 5-tuple.
@@ -587,9 +595,24 @@ def parse_pcap_with_provenance(
     except (OSError, EOFError, gzip.BadGzipFile) as exc:
         raise PcapParseError(f"unreadable PCAP: {capture_path}: {exc}") from exc
 
-    return FlowParseResult(
-        rows=[flow.as_row() for flow in [*completed_flows, *active_flows.values()]],
+    completed_flows.extend(active_flows.values())
+    active_flows.clear()
+    return _FlowAccumulatorParseResult(
+        flows=completed_flows,
         skipped_packet_counts=skipped_packet_counts,
+    )
+
+
+def parse_pcap_with_provenance(
+    path: Path,
+    timeout: float | None,
+    protocols: tuple[int, ...] = SUPPORTED_PROTOCOLS,
+) -> FlowParseResult:
+    """Aggregate an Ethernet PCAP into first-direction canonical flow rows."""
+    parse_result = parse_pcap_accumulators_with_provenance(path, timeout, protocols)
+    return FlowParseResult(
+        rows=[flow.as_row() for flow in parse_result.flows],
+        skipped_packet_counts=parse_result.skipped_packet_counts,
     )
 
 
