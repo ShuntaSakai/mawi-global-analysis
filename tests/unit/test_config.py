@@ -28,6 +28,22 @@ def test_baseline_config_preserves_corrected_defaults() -> None:
     assert config.analysis.overall_ip_scope == "ipv4"
 
 
+def test_scan_source_driven_removal_config_uses_approved_strict_thresholds() -> None:
+    config = load_config(ROOT / "configs" / "scan_source_driven_removal.yaml")
+
+    assert config.experiment.name == "scan_source_driven_removal"
+    assert config.flow.inactive_timeout_seconds is None
+    assert config.prefix.ip_version == 4
+    assert config.prefix.candidate_sources == ["src_prefix", "dst_prefix"]
+    assert config.prefix.membership_mode == "src_or_dst"
+    assert config.prefix.top_k is None
+    assert config.analysis.overall_ip_scope == "ipv4"
+    assert config.scan.strict.enabled is True
+    assert config.scan.strict.min_pattern_count == 20
+    assert config.scan.strict.min_unique_targets == 10
+    assert config.scan.broad.enabled is True
+
+
 @pytest.mark.parametrize(
     "replacement",
     [
