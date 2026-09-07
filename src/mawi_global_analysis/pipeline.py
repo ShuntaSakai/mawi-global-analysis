@@ -37,8 +37,8 @@ from mawi_global_analysis.prefix import (
 )
 from mawi_global_analysis.scan_labels import (
     FLOW_LABEL_COLUMNS,
+    build_flow_labels,
     build_pre_m5_flow_labels,
-    ensure_pre_m5_labels_allowed,
 )
 from mawi_global_analysis.scan_windows import (
     SCAN_SUMMARY_COLUMNS,
@@ -186,8 +186,6 @@ def run_pipeline(args: argparse.Namespace) -> int:
     selected_stages = _selected_stages(args, config)
     forced_stages = _forced_stages(args.force, config)
     _ensure_forced_stages_are_selected(forced_stages, selected_stages)
-    ensure_pre_m5_labels_allowed(config)
-
     provisional_paths = _provisional_run_paths(args, run_name)
     manifest: RunManifest | None = None
     existing: dict[str, Any] | None = None
@@ -407,7 +405,12 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 if stage in effective_forced_stages or not _valid_neutral_label_artifact(
                     paths.labels, existing, artifacts["flows"], context, config
                 ):
-                    _write_pre_m5_labels(artifacts["flows"], config, paths.labels)
+                    _write_scan_labels(
+                        artifacts["flows"],
+                        artifacts["scan-stats"],
+                        config,
+                        paths.labels,
+                    )
                     stage_status = "completed"
                 else:
                     stage_status = "reused"
@@ -1122,12 +1125,18 @@ def _write_scan_statistics(
     _write_dataframe_atomically(summary, summary_path)
 
 
-def _write_pre_m5_labels(
-    flows_path: Path, config: ExperimentConfig, output_path: Path
+def _write_scan_labels(
+    flows_path: Path,
+    scan_windows_path: Path,
+    config: ExperimentConfig,
+    output_path: Path,
 ) -> None:
-    _write_dataframe_atomically(
-        build_pre_m5_flow_labels(pd.read_csv(flows_path), config), output_path
-    )
+    flows = pd.read_csv(flows_path)
+    if config.scan.strict.enabled or config.scan.broad.enabled:
+        labels = build_flow_labels(flows, pd.read_csv(scan_windows_path), config)
+    else:
+        labels = build_pre_m5_flow_labels(flows, config)
+    _write_dataframe_atomically(labels, output_path)
 
 
 def _valid_neutral_label_artifact(

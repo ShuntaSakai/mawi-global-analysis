@@ -13,6 +13,8 @@ from mawi_global_analysis import pipeline
 ROOT = Path(__file__).parents[2]
 PCAP_PATH = ROOT / "tests" / "fixtures" / "pcaps" / "tcp_patterns.pcap"
 CONFIG_PATH = ROOT / "configs" / "baseline.yaml"
+M5_CONFIG_PATH = ROOT / "configs" / "scan_source_driven_removal.yaml"
+THRESHOLD_EXPLORATION_CONFIG_PATH = ROOT / "configs" / "threshold_exploration.yaml"
 CANDIDATES_PATH = ROOT / "tests" / "fixtures" / "aguri" / "sample_candidates.csv"
 
 
@@ -39,6 +41,76 @@ def _stub_aguri(monkeypatch, tmp_path: Path) -> None:
         return candidates
 
     monkeypatch.setattr("mawi_global_analysis.pipeline.run_aguri_stage", copy_candidates)
+
+
+def _stub_m5_flows(monkeypatch, tmp_path: Path) -> None:
+    def write_flows(ctx, cfg, force=False):
+        target = (
+            tmp_path
+            / "data"
+            / ctx.dataset_id
+            / "processed"
+            / "flows"
+            / "synthetic"
+            / "flows.csv"
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        strict_rows = [
+            {
+                "flow_id": flow_id,
+                "protocol": "tcp",
+                "first_syn_time": 1.0,
+                "initial_syn_sender_ip": "198.51.100.1",
+                "initial_syn_receiver_ip": "203.0.113.1",
+                "initial_syn_receiver_port": 10000 + flow_id,
+                "observed_tcp_pattern": "syn_to_rst",
+            }
+            for flow_id in range(1, 21)
+        ]
+        pd.DataFrame(
+            [
+                *strict_rows,
+                {
+                    "flow_id": 21,
+                    "protocol": "tcp",
+                    "first_syn_time": 120.0,
+                    "initial_syn_sender_ip": "198.51.100.1",
+                    "initial_syn_receiver_ip": "203.0.113.2",
+                    "initial_syn_receiver_port": 443,
+                    "observed_tcp_pattern": "syn_synack_rst",
+                },
+                {
+                    "flow_id": 22,
+                    "protocol": "tcp",
+                    "first_syn_time": 120.0,
+                    "initial_syn_sender_ip": "198.51.100.1",
+                    "initial_syn_receiver_ip": "203.0.113.3",
+                    "initial_syn_receiver_port": 80,
+                    "observed_tcp_pattern": "syn_only_observed",
+                },
+                {
+                    "flow_id": 23,
+                    "protocol": "udp",
+                    "first_syn_time": None,
+                    "initial_syn_sender_ip": "198.51.100.1",
+                    "initial_syn_receiver_ip": None,
+                    "initial_syn_receiver_port": None,
+                    "observed_tcp_pattern": "none",
+                },
+                {
+                    "flow_id": 24,
+                    "protocol": "tcp",
+                    "first_syn_time": 120.0,
+                    "initial_syn_sender_ip": "198.51.100.2",
+                    "initial_syn_receiver_ip": "203.0.113.4",
+                    "initial_syn_receiver_port": 22,
+                    "observed_tcp_pattern": "syn_only_observed",
+                },
+            ]
+        ).to_csv(target, index=False)
+        return target
+
+    monkeypatch.setattr("mawi_global_analysis.pipeline.run_flow_stage", write_flows)
 
 
 def test_pipeline_writes_threshold_free_stats_and_neutral_labels(
@@ -80,38 +152,73 @@ def test_scan_labels_partial_run_requires_prior_scan_statistics(
         pipeline.run_pipeline(_args("--from", "scan-labels", "--to", "scan-labels"))
 
 
-def test_pipeline_stops_at_m5_gate_when_thresholded_modes_are_enabled(
+def test_pipeline_integrates_m5_source_driven_labels_capture_wide(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Configured numeric thresholds must not activate M5 behavior during M4."""
+    """M5 consumes threshold-free windows and labels only permitted source flows."""
     monkeypatch.chdir(tmp_path)
-    configured = tmp_path / "thresholded.yaml"
-    configured.write_text(
-        CONFIG_PATH.read_text(encoding="utf-8").replace(
-            "strict:\n    enabled: false",
-            "strict:\n    enabled: true\n    min_pattern_count: 2\n    min_unique_targets: 2",
-        ),
-        encoding="utf-8",
-    )
-
+    _stub_m5_flows(monkeypatch, tmp_path)
     _stub_aguri(monkeypatch, tmp_path)
     args = pipeline.build_parser().parse_args(
         [
             "--input",
             str(PCAP_PATH),
             "--dataset-id",
-            "thresholded-fixture",
+            "m5-fixture",
             "--config",
-            str(configured),
+            str(M5_CONFIG_PATH),
             "--to",
             "scan-labels",
         ]
     )
 
-    with pytest.raises(RuntimeError, match="M5 threshold approval"):
-        pipeline.run_pipeline(args)
+    assert pipeline.run_pipeline(args) == 0
 
-    assert not (tmp_path / "results" / "thresholded-fixture").exists()
+    labels = pd.read_csv(
+        tmp_path
+        / "results"
+        / "m5-fixture"
+        / "scan_source_driven_removal"
+        / "flow_labels.csv"
+    )
+    assert labels.loc[labels["flow_id"] <= 21, "strict_removed"].all()
+    assert labels.loc[labels["flow_id"] == 22, "broad_removed"].item() is True
+    assert not labels.loc[labels["flow_id"] == 22, "strict_removed"].item()
+    assert not labels.loc[labels["flow_id"].isin([23, 24]), "broad_removed"].any()
+    assert not (labels["strict_removed"] & ~labels["broad_removed"]).any()
+
+
+@pytest.mark.parametrize(
+    ("config_path", "run_name"),
+    [
+        (CONFIG_PATH, "baseline"),
+        (THRESHOLD_EXPLORATION_CONFIG_PATH, "threshold_exploration"),
+    ],
+)
+def test_scan_disabled_configs_continue_to_write_neutral_labels(
+    tmp_path: Path, monkeypatch, config_path: Path, run_name: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    args = pipeline.build_parser().parse_args(
+        [
+            "--input",
+            str(PCAP_PATH),
+            "--dataset-id",
+            "neutral-fixture",
+            "--config",
+            str(config_path),
+            "--to",
+            "scan-labels",
+        ]
+    )
+
+    assert pipeline.run_pipeline(args) == 0
+
+    labels = pd.read_csv(
+        tmp_path / "results" / "neutral-fixture" / run_name / "flow_labels.csv"
+    )
+    assert labels.drop(columns="flow_id").eq(False).all().all()
 
 
 def test_scan_windows_anchor_to_the_first_raw_packet_not_first_retained_flow(
@@ -185,41 +292,6 @@ def test_neutral_label_reuse_rejects_same_shape_corruption(
     flows_path = next((tmp_path / "data" / "fixture" / "processed" / "flows").glob("*/flows.csv"))
     assert restored["flow_id"].tolist() == pd.read_csv(flows_path)["flow_id"].tolist()
     assert restored.drop(columns="flow_id").eq(False).all().all()
-
-
-def test_enabled_mode_rejects_even_a_reusable_neutral_label_artifact(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """The M5 gate precedes scan-label reuse validation and execution."""
-    monkeypatch.chdir(tmp_path)
-    _stub_aguri(monkeypatch, tmp_path)
-    configured = tmp_path / "thresholded.yaml"
-    configured.write_text(
-        CONFIG_PATH.read_text(encoding="utf-8").replace(
-            "strict:\n    enabled: false",
-            "strict:\n    enabled: true\n    min_pattern_count: 2\n    min_unique_targets: 2",
-        ),
-        encoding="utf-8",
-    )
-    assert pipeline.run_pipeline(_args("--to", "scan-labels")) == 0
-
-    with pytest.raises(RuntimeError, match="M5 threshold approval"):
-        pipeline.run_pipeline(
-            pipeline.build_parser().parse_args(
-                [
-                    "--input",
-                    str(PCAP_PATH),
-                    "--dataset-id",
-                    "fixture",
-                    "--config",
-                    str(configured),
-                    "--from",
-                    "scan-labels",
-                    "--to",
-                    "scan-labels",
-                ]
-        )
-    )
 
 
 @pytest.mark.parametrize("provenance", ["missing", "mismatched"])
@@ -300,74 +372,6 @@ def test_dry_run_validates_partial_dependencies_without_writing(
         pipeline.run_pipeline(
             _args("--from", "scan-labels", "--to", "scan-labels", "--dry-run")
         )
-
-    assert not (tmp_path / "data").exists()
-    assert not (tmp_path / "results").exists()
-
-
-def test_dry_run_enforces_m5_gate_without_writing(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    configured = tmp_path / "thresholded.yaml"
-    configured.write_text(
-        CONFIG_PATH.read_text(encoding="utf-8").replace(
-            "strict:\n    enabled: false",
-            "strict:\n    enabled: true\n    min_pattern_count: 2\n    min_unique_targets: 2",
-        ),
-        encoding="utf-8",
-    )
-    args = pipeline.build_parser().parse_args(
-        [
-            "--input",
-            str(PCAP_PATH),
-            "--dataset-id",
-            "dry-thresholded",
-            "--config",
-            str(configured),
-            "--to",
-            "scan-labels",
-            "--dry-run",
-        ]
-    )
-
-    with pytest.raises(RuntimeError, match="M5 threshold approval"):
-        pipeline.run_pipeline(args)
-
-    assert not (tmp_path / "data").exists()
-    assert not (tmp_path / "results").exists()
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_m5_gate_applies_to_ranges_that_omit_scan_labels(
-    tmp_path: Path, monkeypatch, dry_run: bool
-) -> None:
-    """No M0--M4 range may proceed once a thresholded mode is configured."""
-    monkeypatch.chdir(tmp_path)
-    configured = tmp_path / "thresholded.yaml"
-    configured.write_text(
-        CONFIG_PATH.read_text(encoding="utf-8").replace(
-            "strict:\n    enabled: false",
-            "strict:\n    enabled: true\n    min_pattern_count: 2\n    min_unique_targets: 2",
-        ),
-        encoding="utf-8",
-    )
-    args = pipeline.build_parser().parse_args(
-        [
-            "--input",
-            str(PCAP_PATH),
-            "--dataset-id",
-            "range-thresholded",
-            "--config",
-            str(configured),
-            "--from",
-            "prefixes",
-            "--to",
-            "membership",
-            *(["--dry-run"] if dry_run else []),
-        ]
-    )
-
-    with pytest.raises(RuntimeError, match="M5 threshold approval"):
-        pipeline.run_pipeline(args)
 
     assert not (tmp_path / "data").exists()
     assert not (tmp_path / "results").exists()
