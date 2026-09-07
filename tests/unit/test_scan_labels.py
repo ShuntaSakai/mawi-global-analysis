@@ -46,3 +46,23 @@ def test_enabled_scan_modes_stop_at_the_m5_threshold_approval_gate() -> None:
 
     with pytest.raises(ScanThresholdApprovalRequiredError, match="M5 threshold approval"):
         build_pre_m5_flow_labels(pd.DataFrame({"flow_id": [11]}), config)
+
+
+def test_broad_expansion_alone_stops_at_the_m5_threshold_approval_gate() -> None:
+    """The threshold-free expansion toggle cannot activate M5 behavior at M4."""
+    from mawi_global_analysis.scan_labels import (
+        ScanThresholdApprovalRequiredError,
+        build_pre_m5_flow_labels,
+    )
+
+    baseline = load_config(ROOT / "configs" / "baseline.yaml")
+    config = baseline.model_copy(
+        update={
+            "scan": baseline.scan.model_copy(
+                update={"broad": baseline.scan.broad.model_copy(update={"enabled": True})}
+            )
+        }
+    )
+
+    with pytest.raises(ScanThresholdApprovalRequiredError, match="M5 threshold approval"):
+        build_pre_m5_flow_labels(pd.DataFrame({"flow_id": [11]}), config)

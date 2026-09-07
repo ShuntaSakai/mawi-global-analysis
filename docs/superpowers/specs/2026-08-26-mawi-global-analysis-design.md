@@ -143,7 +143,7 @@ results/
 | `flows.csv` | PCAP-derived flow observations and stable derived facts | Regenerate only when input or flow-generation configuration changes |
 | `flow_manifest.json` | Input and flow-generation provenance | Regenerate with `flows.csv` |
 | `aguri_candidates.csv` | Aguri candidate observations from raw traffic | Regenerate when input, Aguri version/binary, or Aguri options change |
-| `flow_labels.csv` | Run-specific classification such as strict/broad scan removal labels | Regenerate when scan/classification config changes |
+| `flow_labels.csv` | Run-specific source-driven strict/broad-expansion removal labels | Regenerate when scan/classification config changes |
 | `prefixes.csv` | Full Aguri candidate ledger plus corrected analysis-selection decisions | Regenerate when candidate/selection config changes |
 | `flow_prefix_membership.csv` | Flow-to-analysis-prefix membership | Regenerate when flow cache or selected prefix scopes change |
 | `source_scan_windows.csv` | Threshold-free source × window observation statistics | Regenerate when flow facts or window definition changes |
@@ -440,16 +440,16 @@ For the corrected baseline, membership is true when:
 
 ## 7. Scan-like Analysis Design
 
-The scan-like system is deliberately hierarchical:
+The scan-like system is deliberately source-driven:
 
 ```text
 flow-level observed TCP facts
         ↓
-source × time-window behavior statistics
+strict positive-evidence source × time-window statistics
         ↓
-strict / broad scan-like classification
+scan-like source derivation
         ↓
-flow-level removal labels
+capture-wide strict removal, then optional broad-evidence expansion
 ```
 
 It must never implement “source labeled malicious → delete every flow from that source.”
@@ -477,7 +477,7 @@ High-confidence positive patterns for the initial implementation are:
 
 The implementation must verify event ordering using the stored directional TCP facts/timestamps. A single matching flow does not establish scan behavior.
 
-A plain SYN with no observed response is not a high-confidence pattern because observation asymmetry may hide the response.
+A plain SYN with no observed response (`syn_only_observed`) is not a high-confidence pattern because observation asymmetry may hide the response. It is retained as broad evidence for later removal expansion only after strict evidence has identified its source as scan-like.
 
 ### 7.3 Threshold-free behavioral metrics
 
@@ -510,40 +510,27 @@ A strict scan window requires repeated positive evidence at source level:
 
 No numeric threshold is authorized by this design document. The values must be selected after the M4 empirical threshold-exploration gate and then written explicitly into the experiment YAML used for M5 onward.
 
-A strict scan-like flow is a high-confidence probe-pattern flow whose initial SYN time belongs to at least one strict scan window for its initial SYN sender.
+A source with at least one strict scan window is a scan-like source. M5 removal then evaluates the permitted observed patterns for that source across the entire capture, as defined in Section 7.5.
 
-### 7.5 Broad behavioral classification
+### 7.5 Source derivation and capture-wide removal
 
-A broad behavioral scan window is based on repeated connection-initiation behavior regardless of response visibility:
+A scan-like source is an `initial_syn_sender_ip` with at least one strict scan window. Broad evidence is not an independent detector and has no `N_broad` or `M_broad` threshold.
 
-- `syn_initiated_flow_count` meets the configured broad count threshold.
-- `unique_targets` meets the configured broad diversity threshold.
+For every scan-like source, removal considers the entire capture, not only the time interval of its strict scan window:
 
-Again, no numeric default is authorized before the M4 manual review.
+```text
+strict_scan_like_flow = scan_like_source
+  AND observed_tcp_pattern IN {syn_to_rst, syn_synack_rst}
 
-Broad removal must be narrower than “all SYN-started flows in a suspicious window.” A flow is removed through the behavioral branch only when it is also `probe_like_flow`.
+broad_scan_like_flow = strict_scan_like_flow
+  OR (scan_like_source AND observed_tcp_pattern == syn_only_observed)
+```
 
-The baseline probe-like set is deliberately conservative:
-
-- Plain SYN(s) observed with no non-SYN response/establishment evidence (`syn_only_observed`). Retransmitted initiator SYNs may still belong to this category.
-- SYN → responder RST/RST+ACK.
-- SYN → SYN+ACK → initiator RST.
-
-A flow with observed handshake completion and transport payload is kept by the behavioral branch.
-
-Ambiguous incomplete-handshake categories such as SYN → SYN+ACK with no observed final ACK/RST are retained as facts and are not removed by the initial broad baseline unless a later sensitivity config explicitly opts into such a rule. This keeps the default broad detector conservative under asymmetric observation.
+`broad.enabled` is an optional removal-expansion toggle for the second line, not a broad scan detector. In either condition, established TCP traffic, completed handshakes with payload, UDP, mid-connection traffic, flows without an observed plain SYN, and every other non-probe-like flow remain present.
 
 ### 7.6 Strict is contained in broad removal
 
-The final broad-removal label is defined so that:
-
-`strict_removed_flows ⊆ broad_removed_flows`
-
-Conceptually:
-
-`broad_scan_like_flow = strict_scan_like_flow OR (behavioral_scan_window_match AND probe_like_flow)`
-
-This invariant is enforced by automated tests.
+The final broad-removal label is defined so that `strict_removed_flow_ids ⊆ broad_removed_flow_ids`. Automated M5 tests must enforce this invariant and verify capture-wide source membership without deleting a source's unrelated flows.
 
 ### 7.7 Source-level summary
 
@@ -556,10 +543,8 @@ unique_targets
 unique_dst_ips
 unique_dst_ports
 high_confidence_probe_pattern_count
-strict_scan_window_count
-behavioral_scan_window_count
-first_scan_window
-last_scan_window
+first_strict_scan_window
+last_strict_scan_window
 ```
 
 The full-capture summary is supporting evidence, not a substitute for the time-window classification logic.
@@ -569,16 +554,16 @@ The full-capture summary is supporting evidence, not a substitute for the time-w
 Threshold selection is explicitly separated from main analysis:
 
 1. Run `threshold_exploration.yaml` with thresholding/removal disabled.
-2. Inspect `syn_initiated_flow_count × unique_targets` and `high_confidence_probe_pattern_count × unique_high_confidence_targets`.
+2. Select candidates only from `high_confidence_probe_pattern_count × unique_high_confidence_targets`; retain and inspect the other threshold-free facts as supporting context.
 3. Inspect ECDF/CCDF, log-scale histograms, and upper-tail quantiles such as Q99, Q99.5, and Q99.9 as candidate guides, not truth labels.
 4. Inspect flows/sources above, near, and below candidate cutoffs.
-5. Choose baseline thresholds from empirical structure plus manual inspection.
+5. Choose `N_strict` and `M_strict` from empirical structure plus manual inspection.
 6. Encode the chosen values into self-contained experiment YAMLs.
 7. Run sensitivity configurations and compare removed flow/packet/byte volume plus the main overall-vs-prefix results.
 
 The pipeline must not automatically choose “Q99 = scan threshold.”
 
-## 8. Raw, Strict, and Broad Experimental Comparison
+## 8. Raw, Strict, and Broad-Expansion Experimental Comparison
 
 The main scan sensitivity experiment uses a prefix set selected exactly once from raw traffic.
 
@@ -591,7 +576,7 @@ Corrected selected Prefix set P
   ↓
   ├── Raw traffic analysis on P
   ├── Strict removal analysis on P
-  └── Broad removal analysis on P
+  └── Broad-evidence expansion analysis on P
 ```
 
 The same analysis prefixes are used across these conditions so that changes in flow features are attributable to traffic removal rather than to changing which prefixes are compared.
@@ -611,10 +596,7 @@ configs/
 ├── paper_legacy.yaml
 ├── baseline.yaml
 ├── threshold_exploration.yaml
-├── scan_positive_evidence.yaml
-├── scan_behavioral_baseline.yaml
-├── scan_behavioral_loose.yaml
-└── scan_behavioral_conservative.yaml
+└── scan_source_driven_removal.yaml
 ```
 
 The full YAML text and its hash are copied into `run_manifest.json` so later edits to the config file do not erase run provenance.
@@ -700,11 +682,7 @@ Purpose: corrected raw analysis.
 
 `threshold_exploration.yaml` generates source-window statistics but does not authorize removal.
 
-After manual M4 threshold selection:
-
-- `scan_positive_evidence.yaml` enables strict positive-evidence removal.
-- `scan_behavioral_baseline.yaml` enables strict plus the baseline behavioral branch.
-- `scan_behavioral_loose.yaml` and `scan_behavioral_conservative.yaml` vary thresholds for sensitivity analysis.
+After manual M4 selection of `N_strict` and `M_strict`, a self-contained M5 config enables strict source detection and may set `broad.enabled` to expand removal to `syn_only_observed` for those already identified sources. No independent Broad threshold configuration is permitted in the main analysis.
 
 The terms “strict detector” and “strict threshold” must not be conflated in names or documentation.
 
@@ -824,8 +802,7 @@ python run_batch.py \
   --datasets datasets/validation_days.txt \
   --configs \
     configs/baseline.yaml \
-    configs/scan_positive_evidence.yaml \
-    configs/scan_behavioral_baseline.yaml \
+    configs/scan_source_driven_removal.yaml \
   --batch-name multi-day-scan-comparison
 ```
 
@@ -933,7 +910,7 @@ For each fixed prefix P, notebooks can compare the same traffic scope under:
 
 - Raw.
 - Strict positive-evidence removal.
-- Broad behavioral removal.
+- Broad-evidence expansion removal.
 
 The notebook must also report removal volume:
 
@@ -1035,10 +1012,7 @@ mawi-global-analysis/
 │   ├── paper_legacy.yaml
 │   ├── baseline.yaml
 │   ├── threshold_exploration.yaml
-│   ├── scan_positive_evidence.yaml
-│   ├── scan_behavioral_baseline.yaml
-│   ├── scan_behavioral_loose.yaml
-│   └── scan_behavioral_conservative.yaml
+│   └── scan_source_driven_removal.yaml
 │
 ├── datasets/
 │   └── validation_days.txt
@@ -1149,8 +1123,8 @@ E: flow observed only from a mid-connection ACK/data packet
 Expected interpretation:
 
 - A/B: positive probe pattern facts.
-- C: observed establishment/payload, not removed by the broad behavioral baseline.
-- D: broad source-behavior evidence but not high-confidence by itself.
+- C: observed establishment/payload, retained even for a scan-like source.
+- D: broad removal-expansion evidence but not high-confidence by itself.
 - E: initial SYN sender unknown and excluded from SYN-initiation source statistics.
 
 ### 17.3 Window boundary test
@@ -1163,7 +1137,7 @@ Automated tests must enforce:
 
 `strict_removed_flow_ids ⊆ broad_removed_flow_ids`
 
-They must also verify that normal window-external traffic and observed established payload traffic from the same scan-like source remain present.
+They must also verify that capture-wide strict/broad expansion removes only the permitted observed patterns and that established payload traffic from the same scan-like source remains present.
 
 ### 17.5 Prefix integration fixture
 
@@ -1245,7 +1219,7 @@ Codex must not invent thresholds to move forward automatically.
 
 ### 18.6 M5 — Scan removal
 
-After threshold approval, implement strict and broad classifications exactly as defined in this spec and verify the subset/retention invariants.
+After approval of `N_strict` and `M_strict`, implement source-driven strict classification and optional broad-evidence expansion exactly as defined in this spec and verify the subset/retention invariants.
 
 ### 18.7 M6–M8
 

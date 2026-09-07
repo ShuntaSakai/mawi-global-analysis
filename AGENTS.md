@@ -159,12 +159,12 @@ The corrected baseline must preserve all of the following:
 
 - A single SYN, failed connection, or positive probe pattern is **not** enough to label a scan.
 - Missing responses are weak negative evidence in MAWI because observation can be asymmetric.
-- A plain SYN with no observed response may contribute to **broad source-behavior statistics**, but it is not high-confidence evidence by itself.
+- `syn_only_observed` is **broad evidence** for removal expansion, not high-confidence source-detection evidence.
 - Scan source identity is `initial_syn_sender_ip`, not canonical `src_ip`.
-- Strict/high-confidence evidence is based on positive observed TCP patterns plus repeated source-level behavior.
-- Broad behavioral removal must never mean "this source is suspicious, so delete all of its flows."
-- Broad removal is limited to **probe-like flows inside behavioral scan windows**.
-- Observed established payload traffic should remain by default in broad removal.
+- Strict evidence (`syn_to_rst`, `syn_synack_rst`) plus repeated source-window behavior identifies scan-like sources.
+- Broad evidence (`syn_only_observed`) must never act as an independent scan detector.
+- Removal must never mean "this source is suspicious, so delete all of its flows." For a source with at least one strict scan window, it is limited across the full capture to strict-evidence flows, plus `syn_only_observed` only when broad expansion is enabled.
+- Observed established payload traffic, UDP, mid-connection, and other non-probe-like flows remain by default.
 - Preserve the invariant:
 
   `strict_removed_flow_ids ⊆ broad_removed_flow_ids`
@@ -179,11 +179,11 @@ At M4:
 
 - Generate `source_scan_windows.csv` using threshold-free source-window statistics.
 - Use 60 s windows, 10 s step, capture-start anchoring, and `[start, end)` membership unless an experiment config explicitly changes those values.
-- Explore `syn_initiated_flow_count × unique_targets` and `high_confidence_probe_pattern_count × unique_high_confidence_targets`.
+- Explore `high_confidence_probe_pattern_count × unique_high_confidence_targets` for threshold selection. Keep all other threshold-free facts, including `syn_initiated_flow_count` and `unique_targets`, for inspection.
 - Quantiles such as Q99/Q99.5/Q99.9 may be used only as **candidate guides** for inspection.
 - Do **not** automatically set scan thresholds from quantiles.
-- Do **not** invent `N_strict`, `M_strict`, `N_broad`, or `M_broad` to continue implementation.
-- Stop at the M4 human-review gate before implementing M5 Strict/Broad removal behavior that depends on chosen numeric thresholds.
+- Do **not** invent `N_strict` or `M_strict` to continue implementation.
+- Stop at the M4 human-review gate before implementing M5 source-driven Strict/Broad removal behavior that depends on those chosen numeric thresholds.
 
 ### Verification evidence boundary
 

@@ -174,8 +174,23 @@ scan:
 aguri: {aguri3_executable: aguri3, agurim_executable: agurim, options: []}
 analysis: {overall_ip_scope: ipv4}
         """,
+    ],
+)
+def test_enabled_scan_modes_require_explicit_thresholds(tmp_path: Path, config_text: str) -> None:
+    config_path = tmp_path / "missing_thresholds.yaml"
+    config_path.write_text(config_text, encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        load_config(config_path)
+
+
+def test_broad_enabled_is_a_threshold_free_removal_expansion_toggle(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "broad_enabled.yaml"
+    config_path.write_text(
         """
-experiment: {name: broad_enabled, description: Broad threshold validation fixture}
+experiment: {name: broad_enabled, description: Broad expansion validation fixture}
 flow: {inactive_timeout_seconds: null}
 prefix: {ip_version: 4, candidate_sources: [src_prefix, dst_prefix], min_prefix_length: 24, containment_strategy: prefer_broader, membership_mode: src_or_dst, normalized_24_enabled: true, top_k: null}
 scan:
@@ -186,13 +201,29 @@ scan:
 aguri: {aguri3_executable: aguri3, agurim_executable: agurim, options: []}
 analysis: {overall_ip_scope: ipv4}
 """,
-    ],
-)
-def test_enabled_scan_modes_require_explicit_thresholds(tmp_path: Path, config_text: str) -> None:
-    config_path = tmp_path / "missing_thresholds.yaml"
-    config_path.write_text(config_text, encoding="utf-8")
+        encoding="utf-8",
+    )
 
-    with pytest.raises(ValidationError):
+    config = load_config(config_path)
+
+    assert config.scan.broad.enabled is True
+
+
+def test_broad_config_rejects_legacy_independent_detector_thresholds(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "legacy_broad_thresholds.yaml"
+    config_path.write_text(
+        (ROOT / "configs" / "baseline.yaml")
+        .read_text(encoding="utf-8")
+        .replace(
+            "broad:\n    enabled: false",
+            "broad:\n    enabled: true\n    min_syn_initiated_flows: 2\n    min_unique_targets: 2",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError, match="min_syn_initiated_flows"):
         load_config(config_path)
 
 

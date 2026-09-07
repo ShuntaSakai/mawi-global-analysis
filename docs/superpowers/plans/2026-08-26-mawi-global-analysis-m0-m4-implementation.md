@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`
 
+> **2026-09-07 scan-design revision:** This completed M0–M4 implementation history remains intact. Its prospective broad-detector instructions are superseded by `docs/superpowers/plans/2026-09-07-scan-source-driven-removal-redesign.md` and the design spec: only `N_strict` and `M_strict` require human approval; `syn_only_observed` is removal-expansion evidence, not an independent broad detector.
+
 ## Global Constraints
 
 - Corrected prefix membership is `src_ip ∈ prefix OR dst_ip ∈ prefix`.
@@ -281,6 +283,6 @@ Required scan-window columns:
 
 ## M4 Human Gate and Deferred Plan
 
-Stop after M4. A researcher must inspect the real `source_scan_windows.csv` distribution and raw/flow records around candidate cutoffs. Only after concrete `N_strict`, `M_strict`, `N_broad`, and `M_broad` values are approved should a second implementation plan be written.
+Stop after M4. A researcher must inspect the real `source_scan_windows.csv` distribution and raw/flow records around candidate strict cutoffs. Only after concrete `N_strict` and `M_strict` values are approved may M5 source-driven removal be implemented.
 
-That post-M4 plan covers M5–M8 only: strict/broad scan-window classification and probe-like flow removal, the Raw/Strict/Broad sensitivity notebook, `run_batch.py` dataset×config matrix execution, multi-dataset validation, and final hardening. This split is intentional: implementation must not invent thresholds just to continue.
+The superseding M4→M5 plan covers strict-window classification, scan-like-source derivation, capture-wide strict removal, optional broad-evidence expansion, invariant tests, and Raw/Strict/Broad comparison. This split is intentional: implementation must not invent thresholds just to continue.

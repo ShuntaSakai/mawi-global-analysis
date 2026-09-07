@@ -64,17 +64,12 @@ class StrictScanConfig(StrictModel):
 
 
 class BroadScanConfig(StrictModel):
-    enabled: bool
-    min_syn_initiated_flows: int | None = Field(default=None, gt=0)
-    min_unique_targets: int | None = Field(default=None, gt=0)
+    """Enable `syn_only_observed` removal expansion for strict scan-like sources.
 
-    @model_validator(mode="after")
-    def require_thresholds_when_enabled(self) -> "BroadScanConfig":
-        if self.enabled and (
-            self.min_syn_initiated_flows is None or self.min_unique_targets is None
-        ):
-            raise ValueError("enabled broad scan mode requires explicit thresholds")
-        return self
+    This flag intentionally has no independent behavioral-detector thresholds.
+    """
+
+    enabled: bool
 
 
 class ScanConfig(StrictModel):

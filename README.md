@@ -95,9 +95,10 @@ name cannot silently overwrite a different input/config identity.
 
 At M4, inspect `source_scan_windows.csv` and nearby raw/flow evidence before
 choosing any numeric scan thresholds. Q99/Q99.5/Q99.9 are candidate guides only;
-they are never automatic thresholds. Do not invent `N_strict`, `M_strict`,
-`N_broad`, or `M_broad`, and do not enable M5 strict/broad classification or
-removal until a researcher has approved explicit values.
+they are never automatic thresholds. Do not invent `N_strict` or `M_strict`,
+and do not enable M5 source-driven classification or removal until a researcher
+has approved those explicit values. `syn_only_observed` is removal-expansion
+evidence for an already identified scan-like source, not an independent detector.
 
 Fixture tests and golden-derived validator smoke coverage validate M0–M4
 contracts. They are distinct from a generated pipeline-output-to-golden
