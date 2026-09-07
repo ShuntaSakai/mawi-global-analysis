@@ -7,6 +7,7 @@ import csv
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterable
@@ -70,7 +71,7 @@ M0_M4_STAGES = (
 )
 SCAN_STATS_SCHEMA_VERSION = "scan-stats-v2"
 SCAN_STATS_CAPTURE_ANCHOR = "raw_first_packet_timestamp"
-NEUTRAL_LABEL_SCHEMA_VERSION = "neutral-labels-v1"
+SCAN_LABEL_SCHEMA_VERSION = "scan-labels-v2"
 STAGE_DEPENDENCIES = {
     "input": (),
     "flows": ("input",),
@@ -353,15 +354,22 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 if stage in effective_forced_stages or not _valid_scan_stats_artifacts(
                     paths, existing, context, config
                 ):
-                    _write_scan_statistics(
-                        artifacts["flows"],
-                        context.dataset_id,
-                        config,
-                        context.path,
-                        paths.scan_windows,
-                        paths.scan_summary,
-                    )
-                    stage_status = "completed"
+                    reusable_stats = _find_reusable_scan_stats(context, config, paths)
+                    if reusable_stats is None:
+                        _write_scan_statistics(
+                            artifacts["flows"],
+                            context.dataset_id,
+                            config,
+                            context.path,
+                            paths.scan_windows,
+                            paths.scan_summary,
+                        )
+                        stage_status = "completed"
+                    else:
+                        _copy_scan_statistics(
+                            reusable_stats[0], reusable_stats[1], paths.scan_windows, paths.scan_summary
+                        )
+                        stage_status = "reused"
                     effective_forced_stages.add("scan-labels")
                 else:
                     stage_status = "reused"
@@ -393,16 +401,17 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     if stage_status == "completed"
                     else None,
                 )
-                if stage_status == "completed":
-                    manifest.record_cache(
-                        "scan-stats",
-                        {**_scan_stats_cache_metadata(context, config), "code_identity": code_identity},
-                    )
-                    _deactivate_excluded_downstream_records(
-                        manifest, "scan-stats", config, selected_stages
-                    )
+                manifest.record_cache(
+                    "scan-stats",
+                    {**_scan_stats_cache_metadata(context, config), "code_identity": code_identity}
+                    if stage_status == "completed"
+                    else _scan_stats_cache_metadata(context, config),
+                )
+                _deactivate_excluded_downstream_records(
+                    manifest, "scan-stats", config, selected_stages
+                )
             elif stage == "scan-labels":
-                if stage in effective_forced_stages or not _valid_neutral_label_artifact(
+                if stage in effective_forced_stages or not _valid_scan_label_artifact(
                     paths.labels, existing, artifacts["flows"], context, config
                 ):
                     _write_scan_labels(
@@ -432,7 +441,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 if stage_status == "completed":
                     manifest.record_cache(
                         "scan-labels",
-                        {**_neutral_label_cache_metadata(context, config), "code_identity": code_identity},
+                        {**_scan_label_cache_metadata(context, config), "code_identity": code_identity},
                     )
             elif stage == "prefixes":
                 aguri_path = artifacts["aguri"]
@@ -795,7 +804,7 @@ def _planned_decisions(
                 "reuse"
                 if stage not in effective_forced
                 and (flows_path := existing_artifacts.get("flows")) is not None
-                and _valid_neutral_label_artifact(
+                and _valid_scan_label_artifact(
                     paths.labels, existing, flows_path, context, config
                 )
                 else "execute"
@@ -1125,6 +1134,43 @@ def _write_scan_statistics(
     _write_dataframe_atomically(summary, summary_path)
 
 
+def _find_reusable_scan_stats(
+    context: InputContext, config: ExperimentConfig, paths: RunPaths
+) -> tuple[Path, Path] | None:
+    for manifest_path in paths.run_dir.parent.glob("*/run_manifest.json"):
+        if manifest_path == paths.manifest:
+            continue
+        existing = _load_existing_manifest(manifest_path)
+        if existing is not None and _valid_scan_stats_artifacts_from_manifest(
+            existing, context, config
+        ):
+            artifacts = existing["artifacts"]
+            return Path(artifacts["source_scan_windows"]["path"]), Path(
+                artifacts["source_scan_summary"]["path"]
+            )
+    return None
+
+
+def _copy_scan_statistics(
+    source_windows: Path,
+    source_summary: Path,
+    target_windows: Path,
+    target_summary: Path,
+) -> None:
+    for source, target in ((source_windows, target_windows), (source_summary, target_summary)):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp", delete=False
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        try:
+            shutil.copyfile(source, temporary_path)
+            temporary_path.replace(target)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+
 def _write_scan_labels(
     flows_path: Path,
     scan_windows_path: Path,
@@ -1139,7 +1185,7 @@ def _write_scan_labels(
     _write_dataframe_atomically(labels, output_path)
 
 
-def _valid_neutral_label_artifact(
+def _valid_scan_label_artifact(
     path: Path,
     existing: dict[str, Any] | None,
     flows_path: Path,
@@ -1149,7 +1195,7 @@ def _valid_neutral_label_artifact(
     artifact = ((existing or {}).get("artifacts") or {}).get("flow_labels") or {}
     if not _cache_metadata_matches(
         (existing or {}).get("cache", {}).get("scan-labels"),
-        _neutral_label_cache_metadata(context, config),
+        _scan_label_cache_metadata(context, config),
     ) or not _valid_csv_artifact(
         path, artifact.get("row_count"), FLOW_LABEL_COLUMNS
     ):
@@ -1163,7 +1209,11 @@ def _valid_neutral_label_artifact(
         return False
     if set(labels["flow_id"].tolist()) != set(flows["flow_id"].tolist()):
         return False
-    return labels.loc[:, FLOW_LABEL_COLUMNS[1:]].eq(False).all().all()
+    return (
+        labels.loc[:, FLOW_LABEL_COLUMNS[1:]].eq(False).all().all()
+        if not (config.scan.strict.enabled or config.scan.broad.enabled)
+        else True
+    )
 
 
 def _write_dataframe_atomically(frame: pd.DataFrame, output_path: Path) -> None:
@@ -1214,14 +1264,29 @@ def _scan_stats_cache_metadata(
     }
 
 
-def _neutral_label_cache_metadata(
+def _scan_label_cache_metadata(
     context: InputContext, config: ExperimentConfig
 ) -> dict[str, str]:
     scan_stats = _scan_stats_cache_metadata(context, config)
     return {
-        "schema_version": NEUTRAL_LABEL_SCHEMA_VERSION,
+        "schema_version": SCAN_LABEL_SCHEMA_VERSION,
         "scan_stats_schema_version": scan_stats["schema_version"],
         "scan_stats_fingerprint": scan_stats["fingerprint"],
+        "fingerprint": stable_json_hash(
+            {
+                "schema_version": SCAN_LABEL_SCHEMA_VERSION,
+                "flow_fingerprint": flow_fingerprint(
+                    context.sha256, config, FLOW_SCHEMA_VERSION
+                ),
+                "scan_stats_fingerprint": scan_stats["fingerprint"],
+                "classification": {
+                    "strict_enabled": config.scan.strict.enabled,
+                    "min_pattern_count": config.scan.strict.min_pattern_count,
+                    "min_unique_targets": config.scan.strict.min_unique_targets,
+                    "broad_enabled": config.scan.broad.enabled,
+                },
+            }
+        ),
     }
 
 

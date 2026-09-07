@@ -45,6 +45,33 @@ def test_flow_fingerprint_tracks_flow_generation_but_not_scan_settings() -> None
     assert flow_fingerprint("a" * 64, tcp_only) != baseline_fingerprint
 
 
+def test_flow_fingerprint_ignores_m5_strict_thresholds_and_broad_toggle() -> None:
+    m5 = load_config(ROOT / "configs" / "scan_source_driven_removal.yaml")
+    stricter = m5.model_copy(
+        update={
+            "scan": m5.scan.model_copy(
+                update={
+                    "strict": m5.scan.strict.model_copy(
+                        update={"min_pattern_count": 30, "min_unique_targets": 15}
+                    )
+                }
+            )
+        }
+    )
+    broad_disabled = m5.model_copy(
+        update={
+            "scan": m5.scan.model_copy(
+                update={"broad": m5.scan.broad.model_copy(update={"enabled": False})}
+            )
+        }
+    )
+
+    fingerprint = flow_fingerprint("a" * 64, m5)
+
+    assert flow_fingerprint("a" * 64, stricter) == fingerprint
+    assert flow_fingerprint("a" * 64, broad_disabled) == fingerprint
+
+
 def test_flow_schema_version_bumps_when_canonical_columns_change() -> None:
     """Legacy TCP flag totals are canonical facts and must invalidate old caches."""
     baseline = load_config(ROOT / "configs" / "baseline.yaml")

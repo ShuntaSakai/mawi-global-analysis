@@ -8,6 +8,7 @@ import pytest
 import dpkt
 
 from mawi_global_analysis import pipeline
+from mawi_global_analysis.hashing import sha256_file
 
 
 ROOT = Path(__file__).parents[2]
@@ -181,11 +182,60 @@ def test_pipeline_integrates_m5_source_driven_labels_capture_wide(
         / "scan_source_driven_removal"
         / "flow_labels.csv"
     )
+    manifest = json.loads(
+        (
+            tmp_path
+            / "results"
+            / "m5-fixture"
+            / "scan_source_driven_removal"
+            / "run_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
     assert labels.loc[labels["flow_id"] <= 21, "strict_removed"].all()
     assert labels.loc[labels["flow_id"] == 22, "broad_removed"].item() is True
     assert not labels.loc[labels["flow_id"] == 22, "strict_removed"].item()
     assert not labels.loc[labels["flow_id"].isin([23, 24]), "broad_removed"].any()
     assert not (labels["strict_removed"] & ~labels["broad_removed"]).any()
+    assert manifest["config"]["text"] == M5_CONFIG_PATH.read_text(encoding="utf-8")
+    assert manifest["config"]["hash"] == sha256_file(M5_CONFIG_PATH)
+    assert manifest["cache"]["scan-labels"]["schema_version"] == (
+        pipeline.SCAN_LABEL_SCHEMA_VERSION
+    )
+    assert manifest["cache"]["scan-labels"]["fingerprint"]
+
+
+def test_threshold_change_reuses_scan_stats_but_reclassifies_labels(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _stub_m5_flows(monkeypatch, tmp_path)
+    _stub_aguri(monkeypatch, tmp_path)
+    stricter_config = tmp_path / "stricter.yaml"
+    stricter_config.write_text(
+        M5_CONFIG_PATH.read_text(encoding="utf-8")
+        .replace("name: scan_source_driven_removal", "name: scan_source_driven_removal_30_15")
+        .replace("min_pattern_count: 20", "min_pattern_count: 30")
+        .replace("min_unique_targets: 10", "min_unique_targets: 15"),
+        encoding="utf-8",
+    )
+    initial = pipeline.build_parser().parse_args(
+        ["--input", str(PCAP_PATH), "--dataset-id", "rerun-fixture", "--config", str(M5_CONFIG_PATH), "--to", "scan-labels"]
+    )
+    rerun = pipeline.build_parser().parse_args(
+        ["--input", str(PCAP_PATH), "--dataset-id", "rerun-fixture", "--config", str(stricter_config), "--to", "scan-labels"]
+    )
+
+    assert pipeline.run_pipeline(initial) == 0
+    assert pipeline.run_pipeline(rerun) == 0
+
+    manifest = json.loads(
+        (tmp_path / "results" / "rerun-fixture" / "scan_source_driven_removal_30_15" / "run_manifest.json").read_text()
+    )
+    labels = pd.read_csv(
+        tmp_path / "results" / "rerun-fixture" / "scan_source_driven_removal_30_15" / "flow_labels.csv"
+    )
+    assert [stage["status"] for stage in manifest["stages"] if stage["name"] == "scan-stats"][-1] == "reused"
+    assert labels.drop(columns="flow_id").eq(False).all().all()
 
 
 @pytest.mark.parametrize(
