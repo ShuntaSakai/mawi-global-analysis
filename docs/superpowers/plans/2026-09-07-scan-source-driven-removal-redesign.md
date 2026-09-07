@@ -10,6 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`
 
+## Implementation Status (2026-09-07)
+
+- M5 source-driven strict removal and optional broad-evidence expansion are implemented.
+- Human-approved provisional thresholds are `N_strict = 20` and `M_strict = 10` in `configs/scan_source_driven_removal.yaml`; threshold changes remain config-driven and are not final scientific thresholds.
+- Scan-label cache identity is separated from threshold-free flow and scan-stat identities.
+- A raw MAWI experimental run remains pending. M6 and the final Raw/Strict/Broad comparison have not started.
+
 ## Global Constraints
 
 - Work directly and uncommitted on `main`; do not run Git history or publication operations.
