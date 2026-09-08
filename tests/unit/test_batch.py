@@ -3,7 +3,9 @@ from pathlib import Path
 import pytest
 
 from mawi_global_analysis.batch import (
+    BatchJob,
     build_batch_jobs,
+    execute_batch_jobs,
     load_dataset_ids,
     normalize_config_paths,
 )
@@ -86,3 +88,96 @@ def test_build_batch_jobs_returns_dataset_by_config_matrix() -> None:
         ("202604091400", Path("first.yaml")),
         ("202604091400", Path("second.yaml")),
     ]
+
+
+def _jobs() -> list[BatchJob]:
+    return [
+        BatchJob("202604081400", Path("first.yaml")),
+        BatchJob("202604091400", Path("first.yaml")),
+        BatchJob("202604101400", Path("first.yaml")),
+    ]
+
+
+def test_execute_batch_jobs_runs_all_successful_jobs_in_input_order() -> None:
+    jobs = _jobs()
+    executed: list[BatchJob] = []
+
+    result = execute_batch_jobs(jobs, lambda job: executed.append(job))
+
+    assert executed == jobs
+    assert result.succeeded is True
+    assert result.failed is False
+    assert [job_result.status for job_result in result.results] == [
+        "succeeded",
+        "succeeded",
+        "succeeded",
+    ]
+
+
+def test_execute_batch_jobs_continues_after_a_failed_job() -> None:
+    jobs = _jobs()
+    executed: list[BatchJob] = []
+
+    def runner(job: BatchJob) -> None:
+        executed.append(job)
+        if job == jobs[1]:
+            raise RuntimeError("middle job failed")
+
+    result = execute_batch_jobs(jobs, runner)
+
+    assert executed == jobs
+    assert result.succeeded is False
+    assert result.failed is True
+    assert result.results[1].status == "failed"
+    assert result.results[1].error_type == "RuntimeError"
+    assert result.results[1].error_message == "middle job failed"
+
+
+def test_execute_batch_jobs_stops_after_failure_when_fail_fast_is_enabled() -> None:
+    jobs = _jobs()
+    executed: list[BatchJob] = []
+
+    def runner(job: BatchJob) -> None:
+        executed.append(job)
+        if job == jobs[1]:
+            raise RuntimeError("middle job failed")
+
+    result = execute_batch_jobs(jobs, runner, fail_fast=True)
+
+    assert executed == jobs[:2]
+    assert [job_result.job for job_result in result.results] == jobs[:2]
+    assert result.succeeded is False
+
+
+def test_execute_batch_jobs_records_multiple_failures_when_continuing() -> None:
+    jobs = _jobs()
+
+    def runner(job: BatchJob) -> None:
+        if job in (jobs[0], jobs[2]):
+            raise ValueError(f"failed {job.dataset_id}")
+
+    result = execute_batch_jobs(jobs, runner)
+
+    assert [job_result.status for job_result in result.results] == [
+        "failed",
+        "succeeded",
+        "failed",
+    ]
+    assert [job_result.error_message for job_result in result.results] == [
+        "failed 202604081400",
+        None,
+        "failed 202604101400",
+    ]
+    assert result.failed is True
+
+
+def test_execute_batch_jobs_preserves_executed_result_order() -> None:
+    jobs = _jobs()
+
+    def runner(job: BatchJob) -> None:
+        if job == jobs[1]:
+            raise RuntimeError("middle job failed")
+
+    result = execute_batch_jobs(jobs, runner)
+
+    assert [job_result.job for job_result in result.results] == jobs

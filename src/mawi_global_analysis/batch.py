@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from mawi_global_analysis.config import load_config
 from mawi_global_analysis.dataset import MawiResolver
@@ -16,6 +17,33 @@ class BatchJob:
 
     dataset_id: str
     config_path: Path
+
+
+@dataclass(frozen=True)
+class BatchJobResult:
+    """The outcome of one executed batch job."""
+
+    job: BatchJob
+    status: Literal["succeeded", "failed"]
+    error_type: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchExecutionResult:
+    """Ordered batch job outcomes and their aggregate success state."""
+
+    results: tuple[BatchJobResult, ...]
+
+    @property
+    def succeeded(self) -> bool:
+        """Return whether every executed job succeeded."""
+        return not self.failed
+
+    @property
+    def failed(self) -> bool:
+        """Return whether any executed job failed."""
+        return any(result.status == "failed" for result in self.results)
 
 
 def load_dataset_ids(path: Path) -> list[str]:
@@ -66,3 +94,38 @@ def build_batch_jobs(
         for dataset_id in dataset_ids
         for config_path in config_paths
     ]
+
+
+def execute_batch_jobs(
+    jobs: Iterable[BatchJob],
+    runner: Callable[[BatchJob], None],
+    *,
+    fail_fast: bool = False,
+) -> BatchExecutionResult:
+    """Run planned jobs sequentially, recording failures for the caller."""
+    if not callable(runner):
+        raise TypeError("runner must be callable")
+    if not isinstance(fail_fast, bool):
+        raise TypeError("fail_fast must be a bool")
+
+    results: list[BatchJobResult] = []
+    for job in jobs:
+        if not isinstance(job, BatchJob):
+            raise TypeError("jobs must contain BatchJob instances")
+        try:
+            runner(job)
+        except Exception as error:
+            results.append(
+                BatchJobResult(
+                    job=job,
+                    status="failed",
+                    error_type=type(error).__name__,
+                    error_message=str(error),
+                )
+            )
+            if fail_fast:
+                break
+        else:
+            results.append(BatchJobResult(job=job, status="succeeded"))
+
+    return BatchExecutionResult(results=tuple(results))
