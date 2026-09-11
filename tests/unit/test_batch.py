@@ -13,6 +13,7 @@ from mawi_global_analysis.batch import (
     run_batch,
     run_pipeline_job,
 )
+from mawi_global_analysis.hashing import sha256_file
 
 
 def _write_valid_config(path: Path, name: str) -> None:
@@ -288,7 +289,11 @@ def test_run_batch_passes_planned_job_order_to_the_pipeline_runner(
             / "run_manifest.json"
         )
         run_manifest.parent.mkdir(parents=True)
-        run_manifest.write_text("{}\n", encoding="utf-8")
+        run_manifest.write_text(
+            f'{{"status": "success", "dataset_id": "{args.dataset}", '
+            f'"config": {{"hash": "{sha256_file(args.config)}"}}}}\n',
+            encoding="utf-8",
+        )
         return 0
 
     assert run_batch(parsed, pipeline_runner=pipeline_runner, analysis_root=tmp_path) == 0
@@ -322,7 +327,11 @@ def test_run_batch_continues_after_pipeline_failure_by_default(tmp_path: Path) -
             / "run_manifest.json"
         )
         run_manifest.parent.mkdir(parents=True)
-        run_manifest.write_text("{}\n", encoding="utf-8")
+        run_manifest.write_text(
+            f'{{"status": "success", "dataset_id": "{args.dataset}", '
+            f'"config": {{"hash": "{sha256_file(args.config)}"}}}}\n',
+            encoding="utf-8",
+        )
         return 0
 
     assert run_batch(parsed, pipeline_runner=pipeline_runner, analysis_root=tmp_path) == 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -384,6 +385,25 @@ def _linked_run_manifest_path(job: BatchJob, analysis_root: Path) -> Path:
     return run_manifest_path(job.dataset_id, run_name, root=analysis_root)
 
 
+def _validate_successful_linked_run_manifest(path: Path, job: BatchJob) -> None:
+    """Require a successful single-run manifest with matching provenance."""
+    if not path.is_file():
+        raise FileNotFoundError(f"expected linked run manifest is missing: {path}")
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"linked run manifest is unreadable: {path}") from error
+    if not isinstance(manifest, dict):
+        raise ValueError(f"linked run manifest is not an object: {path}")
+    if manifest.get("status") != "success":
+        raise ValueError(f"linked run manifest is not successful: {path}")
+    if manifest.get("dataset_id") != job.dataset_id:
+        raise ValueError(f"linked run manifest dataset_id does not match batch job: {path}")
+    config = manifest.get("config")
+    if not isinstance(config, dict) or config.get("hash") != sha256_file(job.config_path):
+        raise ValueError(f"linked run manifest config hash does not match batch job: {path}")
+
+
 def _append_batch_log(path: Path, timestamp: str, message: str) -> None:
     with path.open("a", encoding="utf-8") as log_file:
         log_file.write(f"[{timestamp}] {message}\n")
@@ -438,10 +458,7 @@ def run_batch(
             try:
                 run_pipeline_job(job, pipeline_runner)
                 linked_manifest = _linked_run_manifest_path(job, root)
-                if not linked_manifest.is_file():
-                    raise FileNotFoundError(
-                        f"expected linked run manifest is missing: {linked_manifest}"
-                    )
+                _validate_successful_linked_run_manifest(linked_manifest, job)
             except Exception as error:
                 finished_at = timestamp()
                 duration = monotonic_clock() - started_monotonic

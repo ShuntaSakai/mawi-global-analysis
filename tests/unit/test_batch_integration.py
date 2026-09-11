@@ -58,7 +58,16 @@ def test_successful_batch_persists_manifest_log_and_linked_run_manifests(
             / "run_manifest.json"
         )
         path.parent.mkdir(parents=True)
-        path.write_text("{}\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "success",
+                    "dataset_id": pipeline_args.dataset,
+                    "config": {"hash": sha256_file(config)},
+                }
+            ),
+            encoding="utf-8",
+        )
         return 0
 
     assert run_batch(args, pipeline_runner=runner, analysis_root=tmp_path) == 0
@@ -79,7 +88,7 @@ def test_successful_batch_persists_manifest_log_and_linked_run_manifests(
 
 
 def test_batch_continues_after_job_failure_and_records_log_details(tmp_path: Path) -> None:
-    args, _, _ = _parsed_args(tmp_path)
+    args, _, config = _parsed_args(tmp_path)
     executed: list[str] = []
 
     def runner(pipeline_args) -> int:
@@ -94,7 +103,16 @@ def test_batch_continues_after_job_failure_and_records_log_details(tmp_path: Pat
             / "run_manifest.json"
         )
         path.parent.mkdir(parents=True)
-        path.write_text("{}\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "success",
+                    "dataset_id": pipeline_args.dataset,
+                    "config": {"hash": sha256_file(config)},
+                }
+            ),
+            encoding="utf-8",
+        )
         return 0
 
     assert run_batch(args, pipeline_runner=runner, analysis_root=tmp_path) == 1
@@ -120,7 +138,7 @@ def test_batch_continues_after_job_failure_and_records_log_details(tmp_path: Pat
 
 
 def test_fail_fast_leaves_unexecuted_jobs_pending_and_finalizes_failed(tmp_path: Path) -> None:
-    args, _, _ = _parsed_args(tmp_path)
+    args, _, config = _parsed_args(tmp_path)
     args.fail_fast = True
     executed: list[str] = []
 
@@ -136,7 +154,16 @@ def test_fail_fast_leaves_unexecuted_jobs_pending_and_finalizes_failed(tmp_path:
             / "run_manifest.json"
         )
         path.parent.mkdir(parents=True)
-        path.write_text("{}\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "success",
+                    "dataset_id": pipeline_args.dataset,
+                    "config": {"hash": sha256_file(config)},
+                }
+            ),
+            encoding="utf-8",
+        )
         return 0
 
     assert run_batch(args, pipeline_runner=runner, analysis_root=tmp_path) == 1
@@ -164,6 +191,40 @@ def test_missing_linked_run_manifest_converts_pipeline_success_to_job_failure(
     manifest = json.loads(_manifest_path(tmp_path).read_text(encoding="utf-8"))
     assert [job["status"] for job in manifest["jobs"]] == ["failed", "failed", "failed"]
     assert manifest["jobs"][0]["error"]["type"] == "FileNotFoundError"
+
+
+def test_invalid_linked_run_manifest_converts_pipeline_success_to_job_failure(
+    tmp_path: Path,
+) -> None:
+    args, _, config = _parsed_args(tmp_path)
+
+    def runner(pipeline_args) -> int:
+        path = (
+            tmp_path
+            / "results"
+            / pipeline_args.dataset
+            / "batch_test"
+            / "run_manifest.json"
+        )
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "running",
+                    "dataset_id": pipeline_args.dataset,
+                    "config": {"hash": sha256_file(config)},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    assert run_batch(args, pipeline_runner=runner, analysis_root=tmp_path) == 1
+
+    manifest = json.loads(_manifest_path(tmp_path).read_text(encoding="utf-8"))
+    assert [job["status"] for job in manifest["jobs"]] == ["failed", "failed", "failed"]
+    assert manifest["jobs"][0]["error"]["type"] == "ValueError"
+    assert "not successful" in manifest["jobs"][0]["error"]["message"]
 
 
 def test_batch_output_conflicts_do_not_run_or_overwrite(tmp_path: Path) -> None:
