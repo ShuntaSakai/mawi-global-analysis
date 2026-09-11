@@ -280,9 +280,18 @@ def test_run_batch_passes_planned_job_order_to_the_pipeline_runner(
 
     def pipeline_runner(args: object) -> int:
         executed.append((args.dataset, args.config))  # type: ignore[attr-defined]
+        run_manifest = (
+            tmp_path
+            / "results"
+            / args.dataset  # type: ignore[attr-defined]
+            / args.config.stem  # type: ignore[attr-defined]
+            / "run_manifest.json"
+        )
+        run_manifest.parent.mkdir(parents=True)
+        run_manifest.write_text("{}\n", encoding="utf-8")
         return 0
 
-    assert run_batch(parsed, pipeline_runner=pipeline_runner) == 0
+    assert run_batch(parsed, pipeline_runner=pipeline_runner, analysis_root=tmp_path) == 0
     assert executed == [
         ("202604081400", first.resolve()),
         ("202604081400", second.resolve()),
@@ -303,9 +312,20 @@ def test_run_batch_continues_after_pipeline_failure_by_default(tmp_path: Path) -
 
     def pipeline_runner(args: object) -> int:
         executed.append(args.dataset)  # type: ignore[attr-defined]
-        return 1 if args.dataset == "202604081400" else 0  # type: ignore[attr-defined]
+        if args.dataset == "202604081400":  # type: ignore[attr-defined]
+            return 1
+        run_manifest = (
+            tmp_path
+            / "results"
+            / args.dataset  # type: ignore[attr-defined]
+            / "config"
+            / "run_manifest.json"
+        )
+        run_manifest.parent.mkdir(parents=True)
+        run_manifest.write_text("{}\n", encoding="utf-8")
+        return 0
 
-    assert run_batch(parsed, pipeline_runner=pipeline_runner) == 1
+    assert run_batch(parsed, pipeline_runner=pipeline_runner, analysis_root=tmp_path) == 1
     assert executed == ["202604081400", "202604091400"]
 
 
@@ -323,5 +343,5 @@ def test_run_batch_passes_fail_fast_to_the_execution_controller(tmp_path: Path) 
         executed.append(args.dataset)  # type: ignore[attr-defined]
         return 1
 
-    assert run_batch(parsed, pipeline_runner=pipeline_runner) == 1
+    assert run_batch(parsed, pipeline_runner=pipeline_runner, analysis_root=tmp_path) == 1
     assert executed == ["202604081400"]

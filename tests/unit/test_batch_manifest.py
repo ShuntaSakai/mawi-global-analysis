@@ -168,6 +168,26 @@ def test_manifest_finalizes_failed_when_any_job_failed(tmp_path: Path) -> None:
     assert manifest.data["failed_jobs"] == 1
 
 
+def test_manifest_can_finalize_failed_after_an_unexpected_batch_error(tmp_path: Path) -> None:
+    manifest, jobs = _create_manifest(tmp_path)
+    for job in jobs:
+        manifest.mark_running(job, started_at="2026-09-11T00:01:00+00:00")
+        manifest.mark_succeeded(
+            job,
+            linked_run_manifest=Path("run_manifest.json"),
+            finished_at="2026-09-11T00:01:01+00:00",
+            duration_seconds=1.0,
+        )
+
+    manifest.finalize(
+        finished_at="2026-09-11T00:02:00+00:00", force_failed=True
+    )
+
+    assert manifest.data["status"] == "failed"
+    assert manifest.data["succeeded_jobs"] == 4
+    assert manifest.data["failed_jobs"] == 0
+
+
 def test_manifest_creation_rejects_an_existing_output_path(tmp_path: Path) -> None:
     manifest, _ = _create_manifest(tmp_path)
     dataset_list, config_paths, jobs = _inputs(tmp_path)

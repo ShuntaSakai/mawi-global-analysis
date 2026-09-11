@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -12,7 +15,7 @@ from mawi_global_analysis.config import load_config
 from mawi_global_analysis.dataset import MawiResolver
 from mawi_global_analysis.hashing import sha256_file
 from mawi_global_analysis.manifests import write_json_atomically
-from mawi_global_analysis.pipeline import run_pipeline
+from mawi_global_analysis.pipeline import run_manifest_path, run_pipeline
 
 
 @dataclass(frozen=True)
@@ -164,17 +167,27 @@ class BatchManifest:
         )
         self._write()
 
-    def finalize(self, *, finished_at: str) -> None:
+    def finalize(
+        self,
+        *,
+        finished_at: str,
+        allow_incomplete: bool = False,
+        force_failed: bool = False,
+    ) -> None:
         """Finalize a fully completed batch as succeeded or failed."""
         if self.data["status"] != "running":
             raise ValueError(f"cannot finalize batch with status {self.data['status']!r}")
         incomplete = [
             record for record in self._job_records() if record["status"] not in {"succeeded", "failed"}
         ]
-        if incomplete:
+        if incomplete and not allow_incomplete:
             raise ValueError("cannot finalize batch with incomplete jobs")
         self._refresh_counts()
-        self.data["status"] = "failed" if self.data["failed_jobs"] else "succeeded"
+        self.data["status"] = (
+            "failed"
+            if force_failed or self.data["failed_jobs"] or incomplete
+            else "succeeded"
+        )
         self.data["finished_at"] = finished_at
         self._write()
 
@@ -342,18 +355,139 @@ def run_pipeline_job(
         )
 
 
+def _timestamp() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _batch_name(value: str | None) -> str:
+    name = "batch" if value is None else value
+    candidate = Path(name)
+    if (
+        not name
+        or name in {".", ".."}
+        or candidate.is_absolute()
+        or candidate.name != name
+        or "/" in name
+        or "\\" in name
+    ):
+        raise ValueError("batch name must be a safe single path component")
+    return name
+
+
+def _batch_output_paths(analysis_root: Path, batch_name: str) -> tuple[Path, Path]:
+    output_dir = analysis_root / "results" / "batches" / batch_name
+    return output_dir / "batch_manifest.json", output_dir / "batch.log"
+
+
+def _linked_run_manifest_path(job: BatchJob, analysis_root: Path) -> Path:
+    run_name = load_config(job.config_path).experiment.name
+    return run_manifest_path(job.dataset_id, run_name, root=analysis_root)
+
+
+def _append_batch_log(path: Path, timestamp: str, message: str) -> None:
+    with path.open("a", encoding="utf-8") as log_file:
+        log_file.write(f"[{timestamp}] {message}\n")
+        log_file.flush()
+        os.fsync(log_file.fileno())
+
+
 def run_batch(
     args: argparse.Namespace,
     *,
     pipeline_runner: Callable[[argparse.Namespace], int] = run_pipeline,
+    analysis_root: Path | None = None,
+    timestamp: Callable[[], str] = _timestamp,
+    monotonic_clock: Callable[[], float] = time.monotonic,
 ) -> int:
-    """Plan and execute batch jobs with the existing sequential controller."""
+    """Plan, execute, and persist one sequential batch run."""
     config_inputs = [args.config] if args.config is not None else args.configs
     config_paths = normalize_config_paths(config_inputs)
-    jobs = build_batch_jobs(load_dataset_ids(args.datasets), config_paths)
-    result = execute_batch_jobs(
-        jobs,
-        lambda job: run_pipeline_job(job, pipeline_runner),
-        fail_fast=args.fail_fast,
+    dataset_ids = load_dataset_ids(args.datasets)
+    jobs = build_batch_jobs(dataset_ids, config_paths)
+    root = (analysis_root or Path.cwd()).resolve()
+    batch_name = _batch_name(args.batch_name)
+    manifest_path, log_path = _batch_output_paths(root, batch_name)
+    if manifest_path.exists() or log_path.exists():
+        raise FileExistsError(f"batch output already exists: {manifest_path.parent}")
+
+    manifest = BatchManifest.create(
+        manifest_path,
+        batch_name=batch_name,
+        dataset_list_path=args.datasets,
+        dataset_ids=dataset_ids,
+        config_paths=config_paths,
+        jobs=jobs,
+        started_at=timestamp(),
     )
-    return 0 if result.succeeded else 1
+    try:
+        with log_path.open("x", encoding="utf-8"):
+            pass
+        _append_batch_log(
+            log_path,
+            timestamp(),
+            f"[BATCH START] {batch_name}: {len(dataset_ids)} datasets, {len(config_paths)} configs, {len(jobs)} jobs",
+        )
+
+        def runner(job: BatchJob) -> None:
+            started_at = timestamp()
+            started_monotonic = monotonic_clock()
+            manifest.mark_running(job, started_at=started_at)
+            _append_batch_log(
+                log_path, started_at, f"[START] {job.dataset_id} {job.config_path}"
+            )
+            try:
+                run_pipeline_job(job, pipeline_runner)
+                linked_manifest = _linked_run_manifest_path(job, root)
+                if not linked_manifest.is_file():
+                    raise FileNotFoundError(
+                        f"expected linked run manifest is missing: {linked_manifest}"
+                    )
+            except Exception as error:
+                finished_at = timestamp()
+                duration = monotonic_clock() - started_monotonic
+                manifest.mark_failed(
+                    job,
+                    error,
+                    finished_at=finished_at,
+                    duration_seconds=duration,
+                )
+                _append_batch_log(
+                    log_path,
+                    finished_at,
+                    f"[FAIL] {job.dataset_id} {job.config_path}: {type(error).__name__}: {error}",
+                )
+                raise
+            else:
+                finished_at = timestamp()
+                duration = monotonic_clock() - started_monotonic
+                manifest.mark_succeeded(
+                    job,
+                    linked_run_manifest=linked_manifest,
+                    finished_at=finished_at,
+                    duration_seconds=duration,
+                )
+                _append_batch_log(
+                    log_path, finished_at, f"[DONE] {job.dataset_id} {job.config_path}"
+                )
+
+        result = execute_batch_jobs(jobs, runner, fail_fast=args.fail_fast)
+        if args.fail_fast and result.failed:
+            _append_batch_log(log_path, timestamp(), "[FAIL-FAST] remaining jobs were not run")
+        status = "SUCCEEDED" if result.succeeded else "FAILED"
+        _append_batch_log(
+            log_path,
+            timestamp(),
+            f"[BATCH {status}] {manifest.data['succeeded_jobs']} succeeded, {manifest.data['failed_jobs']} failed",
+        )
+        manifest.finalize(
+            finished_at=timestamp(), allow_incomplete=args.fail_fast and result.failed
+        )
+        return 0 if result.succeeded else 1
+    except Exception:
+        if log_path.exists():
+            _append_batch_log(log_path, timestamp(), "[BATCH FAILED] unexpected orchestration error")
+        if manifest.data["status"] == "running":
+            manifest.finalize(
+                finished_at=timestamp(), allow_incomplete=True, force_failed=True
+            )
+        raise

@@ -578,16 +578,24 @@ def _resolve_input(args: argparse.Namespace, *, dry_run: bool) -> InputResolutio
 
 
 def _run_paths(dataset_id: str, run_name: str) -> RunPaths:
-    run_dir = Path.cwd() / "results" / dataset_id / run_name
+    run_dir = run_manifest_path(dataset_id, run_name).parent
     return RunPaths(
         run_dir=run_dir,
-        manifest=run_dir / "run_manifest.json",
+        manifest=run_manifest_path(dataset_id, run_name),
         scan_windows=run_dir / "source_scan_windows.csv",
         scan_summary=run_dir / "source_scan_summary.csv",
         labels=run_dir / "flow_labels.csv",
         prefixes=run_dir / "prefixes.csv",
         membership=run_dir / "flow_prefix_membership.csv",
     )
+
+
+def run_manifest_path(
+    dataset_id: str, run_name: str, root: Path | None = None
+) -> Path:
+    """Return the canonical single-run manifest location for one dataset/run."""
+    analysis_root = root if root is not None else Path.cwd()
+    return analysis_root / "results" / dataset_id / run_name / "run_manifest.json"
 
 
 def _load_existing_manifest(path: Path) -> dict[str, Any] | None:
