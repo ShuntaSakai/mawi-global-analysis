@@ -5,9 +5,13 @@ import pytest
 from mawi_global_analysis.batch import (
     BatchJob,
     build_batch_jobs,
+    build_batch_parser,
     execute_batch_jobs,
     load_dataset_ids,
     normalize_config_paths,
+    pipeline_args_for_job,
+    run_batch,
+    run_pipeline_job,
 )
 
 
@@ -181,3 +185,143 @@ def test_execute_batch_jobs_preserves_executed_result_order() -> None:
     result = execute_batch_jobs(jobs, runner)
 
     assert [job_result.job for job_result in result.results] == jobs
+
+
+def test_batch_parser_accepts_a_single_config() -> None:
+    parsed = build_batch_parser().parse_args(
+        ["--datasets", "datasets.txt", "--config", "baseline.yaml"]
+    )
+
+    assert parsed.datasets == Path("datasets.txt")
+    assert parsed.config == Path("baseline.yaml")
+    assert parsed.configs is None
+
+
+def test_batch_parser_accepts_a_config_matrix() -> None:
+    parsed = build_batch_parser().parse_args(
+        [
+            "--datasets",
+            "datasets.txt",
+            "--configs",
+            "baseline.yaml",
+            "scan.yaml",
+            "--batch-name",
+            "comparison",
+        ]
+    )
+
+    assert parsed.config is None
+    assert parsed.configs == [Path("baseline.yaml"), Path("scan.yaml")]
+    assert parsed.batch_name == "comparison"
+
+
+def test_batch_parser_rejects_config_and_configs_together() -> None:
+    with pytest.raises(SystemExit) as error:
+        build_batch_parser().parse_args(
+            [
+                "--datasets",
+                "datasets.txt",
+                "--config",
+                "baseline.yaml",
+                "--configs",
+                "scan.yaml",
+            ]
+        )
+
+    assert error.value.code == 2
+
+
+def test_batch_parser_requires_a_config_selection() -> None:
+    with pytest.raises(SystemExit) as error:
+        build_batch_parser().parse_args(["--datasets", "datasets.txt"])
+
+    assert error.value.code == 2
+
+
+def test_pipeline_args_for_job_matches_the_single_dataset_cli_defaults() -> None:
+    job = BatchJob("202604081400", Path("baseline.yaml"))
+
+    args = pipeline_args_for_job(job)
+
+    assert vars(args) == {
+        "dataset": "202604081400",
+        "input": None,
+        "dataset_id": None,
+        "config": Path("baseline.yaml"),
+        "run_name": None,
+        "from_stage": None,
+        "to_stage": None,
+        "force": None,
+        "dry_run": False,
+        "redownload": False,
+    }
+
+
+def test_run_pipeline_job_rejects_a_nonzero_pipeline_status() -> None:
+    job = BatchJob("202604081400", Path("baseline.yaml"))
+
+    with pytest.raises(RuntimeError, match="non-zero status 2"):
+        run_pipeline_job(job, lambda args: 2)
+
+
+def test_run_batch_passes_planned_job_order_to_the_pipeline_runner(
+    tmp_path: Path,
+) -> None:
+    dataset_list = tmp_path / "datasets.txt"
+    dataset_list.write_text("202604081400\n202604091400\n", encoding="utf-8")
+    first = tmp_path / "first.yaml"
+    second = tmp_path / "second.yaml"
+    _write_valid_config(first, "first")
+    _write_valid_config(second, "second")
+    parsed = build_batch_parser().parse_args(
+        ["--datasets", str(dataset_list), "--configs", str(first), str(second)]
+    )
+    executed: list[tuple[str, Path]] = []
+
+    def pipeline_runner(args: object) -> int:
+        executed.append((args.dataset, args.config))  # type: ignore[attr-defined]
+        return 0
+
+    assert run_batch(parsed, pipeline_runner=pipeline_runner) == 0
+    assert executed == [
+        ("202604081400", first.resolve()),
+        ("202604081400", second.resolve()),
+        ("202604091400", first.resolve()),
+        ("202604091400", second.resolve()),
+    ]
+
+
+def test_run_batch_continues_after_pipeline_failure_by_default(tmp_path: Path) -> None:
+    dataset_list = tmp_path / "datasets.txt"
+    dataset_list.write_text("202604081400\n202604091400\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    _write_valid_config(config, "config")
+    parsed = build_batch_parser().parse_args(
+        ["--datasets", str(dataset_list), "--config", str(config)]
+    )
+    executed: list[str] = []
+
+    def pipeline_runner(args: object) -> int:
+        executed.append(args.dataset)  # type: ignore[attr-defined]
+        return 1 if args.dataset == "202604081400" else 0  # type: ignore[attr-defined]
+
+    assert run_batch(parsed, pipeline_runner=pipeline_runner) == 1
+    assert executed == ["202604081400", "202604091400"]
+
+
+def test_run_batch_passes_fail_fast_to_the_execution_controller(tmp_path: Path) -> None:
+    dataset_list = tmp_path / "datasets.txt"
+    dataset_list.write_text("202604081400\n202604091400\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    _write_valid_config(config, "config")
+    parsed = build_batch_parser().parse_args(
+        ["--datasets", str(dataset_list), "--config", str(config), "--fail-fast"]
+    )
+    executed: list[str] = []
+
+    def pipeline_runner(args: object) -> int:
+        executed.append(args.dataset)  # type: ignore[attr-defined]
+        return 1
+
+    assert run_batch(parsed, pipeline_runner=pipeline_runner) == 1
+    assert executed == ["202604081400"]

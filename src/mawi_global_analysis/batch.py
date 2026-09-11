@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Literal
 
 from mawi_global_analysis.config import load_config
 from mawi_global_analysis.dataset import MawiResolver
+from mawi_global_analysis.pipeline import run_pipeline
 
 
 @dataclass(frozen=True)
@@ -129,3 +131,63 @@ def execute_batch_jobs(
             results.append(BatchJobResult(job=job, status="succeeded"))
 
     return BatchExecutionResult(results=tuple(results))
+
+
+def build_batch_parser() -> argparse.ArgumentParser:
+    """Build the batch CLI parser without starting any pipeline jobs."""
+    parser = argparse.ArgumentParser(description="Run MAWI analysis jobs as a batch.")
+    parser.add_argument(
+        "--datasets", type=Path, required=True, help="UTF-8 dataset ID list"
+    )
+    config_mode = parser.add_mutually_exclusive_group(required=True)
+    config_mode.add_argument("--config", type=Path, help="One experiment configuration")
+    config_mode.add_argument(
+        "--configs", type=Path, nargs="+", help="Ordered experiment configurations"
+    )
+    parser.add_argument("--batch-name", help="Batch name reserved for provenance output")
+    parser.add_argument("--fail-fast", action="store_true")
+    return parser
+
+
+def pipeline_args_for_job(job: BatchJob) -> argparse.Namespace:
+    """Build the current single-dataset pipeline argument contract for one job."""
+    return argparse.Namespace(
+        dataset=job.dataset_id,
+        input=None,
+        dataset_id=None,
+        config=job.config_path,
+        run_name=None,
+        from_stage=None,
+        to_stage=None,
+        force=None,
+        dry_run=False,
+        redownload=False,
+    )
+
+
+def run_pipeline_job(
+    job: BatchJob, pipeline_runner: Callable[[argparse.Namespace], int] = run_pipeline
+) -> None:
+    """Run one job through the existing single-dataset pipeline boundary."""
+    status = pipeline_runner(pipeline_args_for_job(job))
+    if status != 0:
+        raise RuntimeError(
+            f"pipeline returned non-zero status {status} for dataset {job.dataset_id}"
+        )
+
+
+def run_batch(
+    args: argparse.Namespace,
+    *,
+    pipeline_runner: Callable[[argparse.Namespace], int] = run_pipeline,
+) -> int:
+    """Plan and execute batch jobs with the existing sequential controller."""
+    config_inputs = [args.config] if args.config is not None else args.configs
+    config_paths = normalize_config_paths(config_inputs)
+    jobs = build_batch_jobs(load_dataset_ids(args.datasets), config_paths)
+    result = execute_batch_jobs(
+        jobs,
+        lambda job: run_pipeline_job(job, pipeline_runner),
+        fail_fast=args.fail_fast,
+    )
+    return 0 if result.succeeded else 1
