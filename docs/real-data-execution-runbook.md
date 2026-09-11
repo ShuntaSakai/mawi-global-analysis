@@ -111,7 +111,7 @@ results/batches/<batch-name>/
 cd <analysis-root>/mawi-global-analysis
 ```
 
-`MAWI_ANALYSIS_ROOT` はpipeline/batchのroot指定ではない。これは `02_main_prefix_comparison.ipynb` がrunをロードする際に使うNotebook環境変数であり、Notebook実行時には次のように設定する。
+`MAWI_ANALYSIS_ROOT` はpipeline/batchのroot指定ではない。これはNotebookがartifactをlookupする際に使う環境変数である。`01_scan_threshold_exploration.ipynb` と `02_main_prefix_comparison.ipynb` の実行時には次のように設定する。
 
 ```bash
 export MAWI_ANALYSIS_ROOT="$PWD"
@@ -318,4 +318,13 @@ Run Allで、datasetごと・conditionごとに少なくとも次を確認する
 
 ## 付記: `01_scan_threshold_exploration.ipynb` の移植性
 
-このNotebookの現行inputは環境変数ではなく、特定Macのabsolute `repo_root` と `202604081400/threshold_exploration/source_scan_windows.csv` を直接指定している。そのため研究室PCでそのままRun Allするportable contractは現状存在しない。これは今回のdocumentation-only scopeでは変更しない。必要なら将来、`02`と同様のmanifest/root環境変数ベースのloaderへ修正する別タスクとして扱う。
+`01_scan_threshold_exploration.ipynb` は`source_scan_windows.csv`を直接読む軽量Notebookであり、full `RunData`は必要としない。artifact lookupには次のportable contractを使う。
+
+```bash
+MAWI_ANALYSIS_ROOT=<analysis-root>/mawi-global-analysis \\
+MAWI_DATASET_ID=202604081400 \\
+MAWI_RUN_NAME=threshold_exploration \\
+uv run jupyter notebook notebooks/01_scan_threshold_exploration.ipynb
+```
+
+環境変数を省略した場合、analysis rootはカレントディレクトリ、datasetは`202604081400`、run nameは`threshold_exploration`になる。`MAWI_ANALYSIS_ROOT`はpipeline/batch CLIのoutput rootを変更する変数ではない。指定されたartifactがなければNotebookは明確な`FileNotFoundError`で停止する。
