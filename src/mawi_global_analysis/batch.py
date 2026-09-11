@@ -10,6 +10,8 @@ from typing import Literal
 
 from mawi_global_analysis.config import load_config
 from mawi_global_analysis.dataset import MawiResolver
+from mawi_global_analysis.hashing import sha256_file
+from mawi_global_analysis.manifests import write_json_atomically
 from mawi_global_analysis.pipeline import run_pipeline
 
 
@@ -46,6 +48,170 @@ class BatchExecutionResult:
     def failed(self) -> bool:
         """Return whether any executed job failed."""
         return any(result.status == "failed" for result in self.results)
+
+
+class BatchManifest:
+    """Persist batch provenance without coupling it to batch execution."""
+
+    def __init__(self, path: Path, data: dict[str, object]) -> None:
+        self.path = path
+        self.data = data
+
+    @classmethod
+    def create(
+        cls,
+        path: Path,
+        *,
+        batch_name: str,
+        dataset_list_path: Path,
+        dataset_ids: Sequence[str],
+        config_paths: Sequence[Path],
+        jobs: Sequence[BatchJob],
+        started_at: str,
+    ) -> "BatchManifest":
+        """Create a new batch manifest without overwriting existing provenance."""
+        if path.exists():
+            raise FileExistsError(f"batch manifest already exists: {path}")
+
+        config_hashes = {config_path: sha256_file(config_path) for config_path in config_paths}
+        job_records: list[dict[str, object]] = []
+        for job in jobs:
+            try:
+                config_hash = config_hashes[job.config_path]
+            except KeyError as error:
+                raise ValueError(f"job config path is not a batch config: {job.config_path}") from error
+            job_records.append(
+                {
+                    "dataset_id": job.dataset_id,
+                    "config_path": str(job.config_path),
+                    "config_hash": config_hash,
+                    "status": "pending",
+                    "started_at": None,
+                    "finished_at": None,
+                    "duration_seconds": None,
+                    "linked_run_manifest": None,
+                    "error": None,
+                }
+            )
+
+        manifest = cls(
+            path,
+            {
+                "batch_name": batch_name,
+                "status": "running",
+                "dataset_list": {
+                    "path": str(dataset_list_path),
+                    "hash": sha256_file(dataset_list_path),
+                    "dataset_ids": list(dataset_ids),
+                },
+                "configs": [
+                    {"path": str(config_path), "hash": config_hashes[config_path]}
+                    for config_path in config_paths
+                ],
+                "jobs": job_records,
+                "started_at": started_at,
+                "finished_at": None,
+                "total_jobs": len(job_records),
+                "succeeded_jobs": 0,
+                "failed_jobs": 0,
+            },
+        )
+        manifest._write()
+        return manifest
+
+    def mark_running(self, job: BatchJob, *, started_at: str) -> None:
+        """Record the start of one pending job."""
+        record = self._transition(job, expected="pending", target="running")
+        record["started_at"] = started_at
+        self._write()
+
+    def mark_succeeded(
+        self,
+        job: BatchJob,
+        *,
+        linked_run_manifest: Path,
+        finished_at: str,
+        duration_seconds: float,
+    ) -> None:
+        """Record successful completion and linked single-run provenance."""
+        record = self._transition(job, expected="running", target="succeeded")
+        record.update(
+            {
+                "linked_run_manifest": str(linked_run_manifest),
+                "finished_at": finished_at,
+                "duration_seconds": duration_seconds,
+                "error": None,
+            }
+        )
+        self._write()
+
+    def mark_failed(
+        self,
+        job: BatchJob,
+        error: Exception,
+        *,
+        finished_at: str,
+        duration_seconds: float,
+    ) -> None:
+        """Record failed completion while retaining serializable error details."""
+        record = self._transition(job, expected="running", target="failed")
+        record.update(
+            {
+                "finished_at": finished_at,
+                "duration_seconds": duration_seconds,
+                "error": {"type": type(error).__name__, "message": str(error)},
+            }
+        )
+        self._write()
+
+    def finalize(self, *, finished_at: str) -> None:
+        """Finalize a fully completed batch as succeeded or failed."""
+        if self.data["status"] != "running":
+            raise ValueError(f"cannot finalize batch with status {self.data['status']!r}")
+        incomplete = [
+            record for record in self._job_records() if record["status"] not in {"succeeded", "failed"}
+        ]
+        if incomplete:
+            raise ValueError("cannot finalize batch with incomplete jobs")
+        self._refresh_counts()
+        self.data["status"] = "failed" if self.data["failed_jobs"] else "succeeded"
+        self.data["finished_at"] = finished_at
+        self._write()
+
+    def _transition(
+        self, job: BatchJob, *, expected: str, target: str
+    ) -> dict[str, object]:
+        record = self._job_record(job)
+        current = record["status"]
+        if current != expected:
+            raise ValueError(
+                f"cannot transition job {job.dataset_id}/{job.config_path} "
+                f"from {current!r} to {target!r}"
+            )
+        record["status"] = target
+        return record
+
+    def _job_record(self, job: BatchJob) -> dict[str, object]:
+        for record in self._job_records():
+            if (
+                record["dataset_id"] == job.dataset_id
+                and record["config_path"] == str(job.config_path)
+            ):
+                return record
+        raise ValueError(f"job is not part of this batch: {job.dataset_id}/{job.config_path}")
+
+    def _job_records(self) -> list[dict[str, object]]:
+        return self.data["jobs"]  # type: ignore[return-value]
+
+    def _refresh_counts(self) -> None:
+        records = self._job_records()
+        self.data["total_jobs"] = len(records)
+        self.data["succeeded_jobs"] = sum(record["status"] == "succeeded" for record in records)
+        self.data["failed_jobs"] = sum(record["status"] == "failed" for record in records)
+
+    def _write(self) -> None:
+        self._refresh_counts()
+        write_json_atomically(self.path, self.data)
 
 
 def load_dataset_ids(path: Path) -> list[str]:

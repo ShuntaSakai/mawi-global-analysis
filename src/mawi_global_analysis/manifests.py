@@ -13,6 +13,30 @@ def _timestamp() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def write_json_atomically(path: Path, data: dict[str, Any]) -> None:
+    """Persist JSON without exposing partially written manifest files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            json.dump(data, temporary_file, indent=2, sort_keys=True)
+            temporary_file.write("\n")
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
 class RunManifest:
     """Persist a run manifest after every state-changing operation."""
 
@@ -195,23 +219,4 @@ class RunManifest:
 
     def _write(self) -> None:
         self.data["updated_at"] = _timestamp()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=self.path.parent,
-                prefix=f".{self.path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as temporary_file:
-                temporary_path = Path(temporary_file.name)
-                json.dump(self.data, temporary_file, indent=2, sort_keys=True)
-                temporary_file.write("\n")
-                temporary_file.flush()
-                os.fsync(temporary_file.fileno())
-            temporary_path.replace(self.path)
-        finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
+        write_json_atomically(self.path, self.data)
