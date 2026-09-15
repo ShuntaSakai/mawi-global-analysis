@@ -29,10 +29,20 @@ def test_main_prefix_notebook_keeps_only_ecdf_descriptive_distribution_plots() -
     """Prevent CCDF plots from returning to the Raw baseline descriptive views."""
     source = _notebook_source()
 
-    assert "Packet-count ECDF" in source
-    assert "Flow-duration ECDF" in source
+    assert "パケット数のECDF" in source
+    assert "フロー継続時間のECDF" in source
     assert "Packet-count CCDF" not in source
     assert "Flow-duration CCDF" not in source
+
+
+def test_main_prefix_notebook_uses_japanese_user_facing_plot_text() -> None:
+    """Keep notebook headings, plot labels, and legends accessible to Japanese readers."""
+    source = _notebook_source()
+
+    assert "# 修正済みメインプレフィックス比較" in source
+    assert "パケット数ヒストグラム" in source
+    assert "全体IPv4トラフィックに対する除外量" in source
+    assert "選択済みnativeプレフィックス" in source
 
 
 def test_main_prefix_notebook_resolves_the_repository_root_from_notebooks_directory() -> None:
