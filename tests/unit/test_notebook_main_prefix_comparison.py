@@ -35,11 +35,23 @@ def test_main_prefix_notebook_keeps_only_ecdf_descriptive_distribution_plots() -
     assert "Flow-duration CCDF" not in source
 
 
+def test_main_prefix_notebook_compares_raw_and_broad_packet_distributions() -> None:
+    """Keep the fixed-native-prefix Raw/Broad packet-count comparison available."""
+    source = _notebook_source()
+
+    assert "### Broad除外後のパケット数分布" in source
+    assert "broad_included" in source
+    assert "common_packet_bin_edges" in source
+    assert "median_packet_count" in source
+    assert "one_packet_flow_ratio" in source
+    assert "q99_packet_count" in source
+
+
 def test_main_prefix_notebook_uses_japanese_user_facing_plot_text() -> None:
     """Keep notebook headings, plot labels, and legends accessible to Japanese readers."""
     source = _notebook_source()
 
-    assert "# 修正済みメインプレフィックス比較" in source
+    assert "# メインプレフィックス比較" in source
     assert "パケット数ヒストグラム" in source
     assert "全体IPv4トラフィックに対する除外量" in source
     assert "選択済みnativeプレフィックス" in source
