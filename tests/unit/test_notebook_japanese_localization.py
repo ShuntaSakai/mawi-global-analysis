@@ -31,3 +31,18 @@ def test_multi_dataset_notebook_uses_japanese_plot_text() -> None:
     assert "# 複数データセット検証の要約" in source
     assert "データセット別の除外量" in source
     assert "Removal volume across datasets" not in source
+
+
+def test_japanese_notebooks_configure_a_japanese_matplotlib_font() -> None:
+    """Prevent Japanese plot labels from falling back to DejaVu Sans."""
+    for name in (
+        "00_paper_legacy_reproduction.ipynb",
+        "01_scan_threshold_exploration.ipynb",
+        "02_main_prefix_comparison.ipynb",
+        "04_multi_dataset_validation.ipynb",
+    ):
+        source = _source(name)
+        assert "from matplotlib import font_manager" in source
+        assert "'Hiragino Sans'" in source
+        assert "'Noto Sans CJK JP'" in source
+        assert "plt.rcParams['font.family']" in source
