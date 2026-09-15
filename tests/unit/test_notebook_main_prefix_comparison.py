@@ -33,3 +33,14 @@ def test_main_prefix_notebook_keeps_only_ecdf_descriptive_distribution_plots() -
     assert "Flow-duration ECDF" in source
     assert "Packet-count CCDF" not in source
     assert "Flow-duration CCDF" not in source
+
+
+def test_main_prefix_notebook_resolves_the_repository_root_from_notebooks_directory() -> None:
+    """Prevent a notebook-local working directory from redirecting artifact lookup."""
+    source = _notebook_source()
+
+    assert "def resolve_analysis_root()" in source
+    assert "for candidate in (Path.cwd(), *Path.cwd().parents):" in source
+    assert "(candidate / 'pyproject.toml').is_file()" in source
+    assert "(candidate / 'src' / 'mawi_global_analysis').is_dir()" in source
+    assert "os.environ.get('MAWI_ANALYSIS_ROOT', resolve_analysis_root())" in source
