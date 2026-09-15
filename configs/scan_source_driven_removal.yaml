@@ -19,8 +19,8 @@ scan:
   window_membership: "[start,end)"
   strict:
     enabled: true
-    min_pattern_count: 20
-    min_unique_targets: 10
+    min_pattern_count: 5
+    min_unique_targets: 3
   broad:
     enabled: true
 aguri:
