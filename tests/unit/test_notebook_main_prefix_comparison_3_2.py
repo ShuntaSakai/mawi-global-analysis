@@ -41,13 +41,15 @@ def test_packet_count_cdf_compares_overall_and_prefix_within_each_removal_state(
     """Keep packet-count CDFs split into the before/after removal comparison."""
     source = _packet_count_distribution_source()
 
-    assert "packet_cdf_scopes = [('全体トラフィック', ipv4_flows, 'tab:orange', '-')" in source
+    assert "packet_cdf_scopes = [('全トラフィック', ipv4_flows, 'tab:orange', '-')" in source
     assert "('プレフィックストラフィック', selected_scope_flows, 'tab:green', '-')" in source
     assert "plot_packet_distribution(raw_packet_cdf_series, '除外前')" in source
-    assert "plot_packet_distribution(broad_packet_cdf_series, '除外後')" in source
+    assert "plot_packet_distribution(broad_packet_cdf_series, '除外後', reference_series=raw_packet_cdf_series)" in source
     assert "series.append({'protocol': protocol, 'scope': scope, 'style': style, 'label': f'{protocol}: {scope}', 'packets': packets})" in source
     assert "title=f'{title_prefix}：パケット数ヒストグラム'" in source
     assert "title=f'{title_prefix}：パケット数のCDF'" in source
     assert "def packet_cdf_series(condition):" in source
+    assert "def plot_packet_distribution(series, title_prefix, reference_series=None):" in source
+    assert "linestyle=':', alpha=0.35" in source
     assert "Raw: パケット数のCDF" not in source
     assert "Broad除外: パケット数のCDF" not in source
