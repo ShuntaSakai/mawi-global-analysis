@@ -36,3 +36,27 @@ def test_prefix_deep_dive_preserves_observation_facts_and_removed_flow_audit() -
     assert "dst_port" not in source
     assert "利用可能なselected native Prefix" in source
     assert "TARGET_PREFIXES" not in source
+
+
+def test_prefix_deep_dive_adds_broad_removed_sender_diversity_without_canonical_endpoint_proxies() -> None:
+    source = _notebook_source()
+
+    assert "Broad removedの送信元・port多様性" in source
+    assert "initial_syn_sender_ip'].notna()" in source
+    assert "sender_diversity_by_sender" in source
+    assert "unique_receiver_ports" in source
+    assert "unique_receiver_endpoints" in source
+    assert "dominant_observed_tcp_pattern" in source
+    assert "sort_values(['unique_receiver_ports', 'flow_count', 'initial_syn_sender_ip']" in source
+    assert "dst_port" not in source
+
+
+def test_prefix_deep_dive_reports_receiver_port_ties_without_selecting_sorted_first_port() -> None:
+    source = _notebook_source()
+
+    assert "removed_receiver_port_counts" in source
+    assert "unique removed receiver ports" in source
+    assert "max removed flows per receiver port" in source
+    assert "number of receiver ports tied for max" in source
+    assert "なし（同率）" in source
+    assert "removed_ports.iloc[0]['receiver port']" not in source
