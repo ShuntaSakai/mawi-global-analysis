@@ -12,6 +12,15 @@ def _notebook_source() -> str:
     return "\n".join("".join(cell["source"]) for cell in notebook["cells"])
 
 
+def _packet_count_distribution_source() -> str:
+    notebook = json.loads(NOTEBOOK_PATH.read_text())
+    return next(
+        "".join(cell["source"])
+        for cell in notebook["cells"]
+        if cell.get("id") == "161e432a"
+    )
+
+
 def test_main_notebook_delegates_detailed_broad_removal_to_prefix_deep_dive() -> None:
     """Keep the main notebook focused on all-prefix discovery and comparison."""
     source = _notebook_source()
@@ -26,3 +35,19 @@ def test_main_notebook_delegates_detailed_broad_removal_to_prefix_deep_dive() ->
         "131.142.238.168/32",
     ):
         assert prefix not in source
+
+
+def test_packet_count_cdf_compares_overall_and_prefix_within_each_removal_state() -> None:
+    """Keep packet-count CDFs split into the before/after removal comparison."""
+    source = _packet_count_distribution_source()
+
+    assert "packet_cdf_scopes = [('全体トラフィック', ipv4_flows, 'tab:orange', '-')" in source
+    assert "('プレフィックストラフィック', selected_scope_flows, 'tab:green', '-')" in source
+    assert "plot_packet_distribution(raw_packet_cdf_series, '除外前')" in source
+    assert "plot_packet_distribution(broad_packet_cdf_series, '除外後')" in source
+    assert "series.append({'protocol': protocol, 'scope': scope, 'style': style, 'label': f'{protocol}: {scope}', 'packets': packets})" in source
+    assert "title=f'{title_prefix}：パケット数ヒストグラム'" in source
+    assert "title=f'{title_prefix}：パケット数のCDF'" in source
+    assert "def packet_cdf_series(condition):" in source
+    assert "Raw: パケット数のCDF" not in source
+    assert "Broad除外: パケット数のCDF" not in source
