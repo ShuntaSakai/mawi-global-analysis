@@ -12,35 +12,17 @@ def _notebook_source() -> str:
     return "\n".join("".join(cell["source"]) for cell in notebook["cells"])
 
 
-def test_detailed_broad_removal_section_uses_canonical_join_facts() -> None:
-    """Keep the detailed analysis tied to flow_id and SYN receiver facts."""
+def test_main_notebook_delegates_detailed_broad_removal_to_prefix_deep_dive() -> None:
+    """Keep the main notebook focused on all-prefix discovery and comparison."""
     source = _notebook_source()
 
-    assert "## Broad除外によるpacket_count中央値変化が大きいprefixの詳細分析" in source
+    assert "# メインプレフィックス比較" in source
+    assert "### Broad除外によるプレフィックス別中央値の変化" in source
+    assert "## Broad除外によるpacket_count中央値変化が大きいprefixの詳細分析" not in source
     for prefix in (
         "163.29.158.43/32",
         "173.218.110.3/32",
         "202.3.204.0/24",
         "131.142.238.168/32",
     ):
-        assert prefix in source
-    assert "validate='one_to_one'" in source
-    assert "validate='many_to_one'" in source
-    assert "run.membership['analysis_scope'] == 'native'" in source
-    assert "missing_targets" in source
-    assert "Broad removed + Broad remaining = Raw" in source
-    assert "initial_syn_receiver_port" in source
-    assert "initial_syn_receiver_ip" in source
-    assert "broad_removed" in source
-    assert "observed_tcp_pattern" in source
-    assert "protocol_comparison" in source
-    assert "removed_tcp =" in source
-
-
-def test_detailed_broad_removal_section_keeps_service_wording_cautious() -> None:
-    """Ports are service candidates, not application attribution evidence."""
-    source = _notebook_source()
-
-    assert "Service candidate" in source
-    assert "port番号だけからapplicationを断定しない" in source
-    assert "display_detail_table" in source
+        assert prefix not in source
