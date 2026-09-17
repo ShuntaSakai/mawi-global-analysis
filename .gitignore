@@ -4,5 +4,9 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 data/
-results/
+results/*
+!results/202604081400/
+results/202604081400/*
+!results/202604081400/prefix_deep_dive/
+!results/202604081400/prefix_deep_dive/**
 *.egg-info/
