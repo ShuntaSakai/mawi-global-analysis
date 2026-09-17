@@ -53,3 +53,19 @@ def test_packet_count_cdf_compares_overall_and_prefix_within_each_removal_state(
     assert "linestyle=':', alpha=0.35" in source
     assert "Raw: パケット数のCDF" not in source
     assert "Broad除外: パケット数のCDF" not in source
+
+
+def test_packet_count_cdf_displays_slide_statistics_from_its_exact_series() -> None:
+    """Expose median and P95 without changing the CDF population."""
+    source = _packet_count_distribution_source()
+
+    assert "def slide_packet_stats(condition):" in source
+    assert "series = packet_cdf_series(condition)" in source
+    assert "'フロー数': len(item['packets'])" in source
+    assert "'中央値': item['packets'].median()" in source
+    assert "'95パーセンタイル': item['packets'].quantile(0.95)" in source
+    assert "slide_packet_statistics = pd.concat([" in source
+    assert "display(slide_packet_statistics)" in source
+    assert source.index("display(slide_packet_statistics)") < source.index(
+        "plot_packet_distribution(raw_packet_cdf_series, '除外前')"
+    )
