@@ -45,7 +45,7 @@ The code and documentation must preserve the distinction between observation and
 
 - A prefix is a proxy for a communication entity, not proof that the traffic represents a single host or application.
 - `src_ip`/`dst_ip` in canonical flows reflect the first observed packet direction and must not be silently interpreted as initiator/responder.
-- A single SYN, a single failed connection, or a single positive probe pattern must not by itself be labeled a scan.
+- A single SYN or a single `syn_to_rst` pattern must not by itself be labeled a scan. A single observed `syn_synack_rst` is an explicit exception sufficient to identify its initial SYN sender as scan-like.
 - MAWI observation asymmetry means missing response packets are weak negative evidence. Absence of an observed response must not be used as a high-confidence scan criterion by itself.
 - Prefix traffic is a subset of overall traffic, so future inferential statistics must not assume the samples are independent without justification.
 - Capture-length truncation can affect flow duration and must be considered when interpreting 15-minute traces.
@@ -475,7 +475,7 @@ High-confidence positive patterns for the initial implementation are:
 - Closed-port-like probe: initiator plain SYN followed by responder RST or RST+ACK.
 - Half-open-like positive probe: initiator plain SYN → responder SYN+ACK → initiator RST.
 
-The implementation must verify event ordering using the stored directional TCP facts/timestamps. A single matching flow does not establish scan behavior.
+The implementation must verify event ordering using the stored directional TCP facts/timestamps. A single `syn_to_rst` flow does not establish scan behavior; it requires repeated source-window evidence and target diversity. A single `syn_synack_rst` is the explicit exception and establishes scan-like source detection.
 
 A plain SYN with no observed response (`syn_only_observed`) is not a high-confidence pattern because observation asymmetry may hide the response. It is retained as broad evidence for later removal expansion only after strict evidence has identified its source as scan-like.
 
@@ -493,6 +493,7 @@ unique_targets
 unique_dst_ips
 unique_dst_ports
 syn_to_rst_pattern_count
+unique_syn_to_rst_targets
 syn_synack_rst_pattern_count
 high_confidence_probe_pattern_count
 unique_high_confidence_targets
@@ -503,10 +504,12 @@ no_observed_response_count
 
 ### 7.4 Strict classification
 
-A strict scan window requires repeated positive evidence at source level:
+A strict scan window is pattern-specific:
 
-- `high_confidence_probe_pattern_count` meets the configured strict count threshold.
-- `unique_high_confidence_targets` meets the configured strict diversity threshold.
+- Any `syn_synack_rst_pattern_count >= 1` is sufficient.
+- Otherwise, `syn_to_rst_pattern_count` must meet the configured strict count threshold and `unique_syn_to_rst_targets` must meet the configured strict diversity threshold.
+
+`unique_high_confidence_targets` remains a threshold-free supporting observation and must not substitute for `unique_syn_to_rst_targets` in the `syn_to_rst` diversity condition.
 
 No numeric threshold is authorized by this design document. The values must be selected after the M4 empirical threshold-exploration gate and then written explicitly into the experiment YAML used for M5 onward.
 

@@ -69,9 +69,9 @@ M0_M4_STAGES = (
     "prefixes",
     "membership",
 )
-SCAN_STATS_SCHEMA_VERSION = "scan-stats-v2"
+SCAN_STATS_SCHEMA_VERSION = "scan-stats-v3"
 SCAN_STATS_CAPTURE_ANCHOR = "raw_first_packet_timestamp"
-SCAN_LABEL_SCHEMA_VERSION = "scan-labels-v2"
+SCAN_LABEL_SCHEMA_VERSION = "scan-labels-v3"
 STAGE_DEPENDENCIES = {
     "input": (),
     "flows": ("input",),

@@ -17,6 +17,7 @@ SCAN_WINDOW_COLUMNS = (
     "unique_dst_ips",
     "unique_dst_ports",
     "syn_to_rst_pattern_count",
+    "unique_syn_to_rst_targets",
     "syn_synack_rst_pattern_count",
     "high_confidence_probe_pattern_count",
     "unique_high_confidence_targets",
@@ -131,9 +132,16 @@ def _facts(flows: list[pd.Series]) -> dict[str, int]:
     high_confidence = [
         flow for flow in flows if flow["observed_tcp_pattern"] in _HIGH_CONFIDENCE_PATTERNS
     ]
+    syn_to_rst = [
+        flow for flow in flows if flow["observed_tcp_pattern"] == "syn_to_rst"
+    ]
     high_confidence_targets = {
         (str(flow["initial_syn_receiver_ip"]), int(flow["initial_syn_receiver_port"]))
         for flow in high_confidence
+    }
+    syn_to_rst_targets = {
+        (str(flow["initial_syn_receiver_ip"]), int(flow["initial_syn_receiver_port"]))
+        for flow in syn_to_rst
     }
     patterns = [str(flow["observed_tcp_pattern"]) for flow in flows]
     return {
@@ -142,6 +150,7 @@ def _facts(flows: list[pd.Series]) -> dict[str, int]:
         "unique_dst_ips": len({target[0] for target in targets}),
         "unique_dst_ports": len({target[1] for target in targets}),
         "syn_to_rst_pattern_count": patterns.count("syn_to_rst"),
+        "unique_syn_to_rst_targets": len(syn_to_rst_targets),
         "syn_synack_rst_pattern_count": patterns.count("syn_synack_rst"),
         "high_confidence_probe_pattern_count": len(high_confidence),
         "unique_high_confidence_targets": len(high_confidence_targets),

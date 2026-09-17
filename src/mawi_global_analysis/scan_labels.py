@@ -17,8 +17,9 @@ FLOW_LABEL_COLUMNS = (
 
 _STRICT_WINDOW_COLUMNS = {
     "initial_syn_sender_ip",
-    "high_confidence_probe_pattern_count",
-    "unique_high_confidence_targets",
+    "syn_to_rst_pattern_count",
+    "unique_syn_to_rst_targets",
+    "syn_synack_rst_pattern_count",
 }
 _FLOW_LABEL_INPUT_COLUMNS = {
     "flow_id",
@@ -62,10 +63,10 @@ def build_pre_m5_flow_labels(
 def classify_strict_windows(
     source_scan_windows: pd.DataFrame, config: ExperimentConfig
 ) -> pd.DataFrame:
-    """Add a strict-window decision using the configured positive evidence.
+    """Add a strict-window decision using pattern-specific positive evidence.
 
-    The input remains the threshold-free source-window artifact.  A window is
-    strict only when both configured comparisons are satisfied inclusively.
+    A single ``syn_synack_rst`` is sufficient.  ``syn_to_rst`` remains subject
+    to both configured inclusive repetition and target-diversity thresholds.
     """
     _require_columns(source_scan_windows, _STRICT_WINDOW_COLUMNS, "source windows")
     strict = config.scan.strict
@@ -75,15 +76,21 @@ def classify_strict_windows(
         raise ValueError("strict window classification requires explicit thresholds")
 
     classified = source_scan_windows.copy()
-    pattern_count = pd.to_numeric(
-        classified["high_confidence_probe_pattern_count"], errors="raise"
+    syn_to_rst_count = pd.to_numeric(
+        classified["syn_to_rst_pattern_count"], errors="raise"
     )
-    unique_targets = pd.to_numeric(
-        classified["unique_high_confidence_targets"], errors="raise"
+    unique_syn_to_rst_targets = pd.to_numeric(
+        classified["unique_syn_to_rst_targets"], errors="raise"
+    )
+    syn_synack_rst_count = pd.to_numeric(
+        classified["syn_synack_rst_pattern_count"], errors="raise"
     )
     classified["strict_window"] = (
-        (pattern_count >= strict.min_pattern_count)
-        & (unique_targets >= strict.min_unique_targets)
+        (syn_synack_rst_count >= 1)
+        | (
+            (syn_to_rst_count >= strict.min_pattern_count)
+            & (unique_syn_to_rst_targets >= strict.min_unique_targets)
+        )
     )
     return classified
 

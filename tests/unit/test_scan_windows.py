@@ -68,6 +68,7 @@ def test_source_windows_are_capture_anchored_half_open_and_threshold_free() -> N
     assert first["syn_initiated_flow_count"] == 2
     assert first["unique_targets"] == 1
     assert first["syn_to_rst_pattern_count"] == 1
+    assert first["unique_syn_to_rst_targets"] == 1
     assert first["syn_synack_rst_pattern_count"] == 0
     assert first["high_confidence_probe_pattern_count"] == 1
     assert first["unique_high_confidence_targets"] == 1
@@ -77,6 +78,40 @@ def test_source_windows_are_capture_anchored_half_open_and_threshold_free() -> N
     assert at_sixty["syn_initiated_flow_count"] == 1
     assert at_sixty["unique_targets"] == 1
     assert at_sixty["syn_synack_rst_pattern_count"] == 1
+
+
+def test_windows_keep_syn_to_rst_target_diversity_separate_from_other_strict_patterns() -> None:
+    """A SYN+ACK+RST target cannot inflate SYN-to-RST target diversity."""
+    from mawi_global_analysis.scan_windows import build_source_scan_windows
+
+    flows = pd.DataFrame(
+        [
+            {
+                "flow_id": 1,
+                "protocol": 6,
+                "first_syn_time": 1.0,
+                "initial_syn_sender_ip": "198.51.100.1",
+                "initial_syn_receiver_ip": "192.0.2.1",
+                "initial_syn_receiver_port": 80,
+                "observed_tcp_pattern": "syn_to_rst",
+            },
+            {
+                "flow_id": 2,
+                "protocol": 6,
+                "first_syn_time": 2.0,
+                "initial_syn_sender_ip": "198.51.100.1",
+                "initial_syn_receiver_ip": "192.0.2.2",
+                "initial_syn_receiver_port": 443,
+                "observed_tcp_pattern": "syn_synack_rst",
+            },
+        ]
+    )
+
+    row = build_source_scan_windows(flows, "fixture", 60, 10, 0.0).iloc[0]
+
+    assert row["syn_to_rst_pattern_count"] == 1
+    assert row["unique_syn_to_rst_targets"] == 1
+    assert row["unique_high_confidence_targets"] == 2
 
 
 def test_windows_count_endpoint_pairs_and_only_actual_plain_syn_initiators() -> None:

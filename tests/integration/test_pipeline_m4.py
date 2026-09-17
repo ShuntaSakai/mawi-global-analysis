@@ -213,9 +213,9 @@ def test_threshold_change_reuses_scan_stats_but_reclassifies_labels(
     stricter_config = tmp_path / "stricter.yaml"
     stricter_config.write_text(
         M5_CONFIG_PATH.read_text(encoding="utf-8")
-        .replace("name: scan_source_driven_removal", "name: scan_source_driven_removal_30_15")
-        .replace("min_pattern_count: 20", "min_pattern_count: 30")
-        .replace("min_unique_targets: 10", "min_unique_targets: 15"),
+        .replace("name: scan_source_driven_removal", "name: scan_source_driven_removal_21_21")
+        .replace("min_pattern_count: 3", "min_pattern_count: 21")
+        .replace("min_unique_targets: 2", "min_unique_targets: 21"),
         encoding="utf-8",
     )
     initial = pipeline.build_parser().parse_args(
@@ -229,13 +229,16 @@ def test_threshold_change_reuses_scan_stats_but_reclassifies_labels(
     assert pipeline.run_pipeline(rerun) == 0
 
     manifest = json.loads(
-        (tmp_path / "results" / "rerun-fixture" / "scan_source_driven_removal_30_15" / "run_manifest.json").read_text()
+        (tmp_path / "results" / "rerun-fixture" / "scan_source_driven_removal_21_21" / "run_manifest.json").read_text()
     )
     labels = pd.read_csv(
-        tmp_path / "results" / "rerun-fixture" / "scan_source_driven_removal_30_15" / "flow_labels.csv"
+        tmp_path / "results" / "rerun-fixture" / "scan_source_driven_removal_21_21" / "flow_labels.csv"
     )
     assert [stage["status"] for stage in manifest["stages"] if stage["name"] == "scan-stats"][-1] == "reused"
-    assert labels.drop(columns="flow_id").eq(False).all().all()
+    # The one SYN+ACK+RST still detects the source under the explicit
+    # exception, despite thresholds that rule out repeated SYN-to-RST.
+    assert labels.loc[labels["flow_id"] <= 21, "strict_removed"].all()
+    assert [stage["status"] for stage in manifest["stages"] if stage["name"] == "scan-labels"][-1] == "completed"
 
 
 @pytest.mark.parametrize(

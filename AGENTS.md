@@ -157,11 +157,12 @@ The corrected baseline must preserve all of the following:
 
 ### Scan-like analysis
 
-- A single SYN, failed connection, or positive probe pattern is **not** enough to label a scan.
+- A single SYN or `syn_to_rst` pattern is **not** enough to label a scan.
+- `syn_to_rst` requires repeated source-window evidence and target diversity using the configured strict thresholds. A single `syn_synack_rst` is the explicit exception and is sufficient to identify its `initial_syn_sender_ip` as scan-like.
 - Missing responses are weak negative evidence in MAWI because observation can be asymmetric.
 - `syn_only_observed` is **broad evidence** for removal expansion, not high-confidence source-detection evidence.
 - Scan source identity is `initial_syn_sender_ip`, not canonical `src_ip`.
-- Strict evidence (`syn_to_rst`, `syn_synack_rst`) plus repeated source-window behavior identifies scan-like sources.
+- Strict evidence uses pattern-specific source detection: repeated `syn_to_rst` plus target diversity, or any observed `syn_synack_rst`.
 - Broad evidence (`syn_only_observed`) must never act as an independent scan detector.
 - Removal must never mean "this source is suspicious, so delete all of its flows." For a source with at least one strict scan window, it is limited across the full capture to strict-evidence flows, plus `syn_only_observed` only when broad expansion is enabled.
 - Observed established payload traffic, UDP, mid-connection, and other non-probe-like flows remain by default.

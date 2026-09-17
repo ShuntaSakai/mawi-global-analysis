@@ -91,3 +91,23 @@ def test_m5_label_artifact_is_not_reused_for_different_classification_config(
     assert not pipeline._valid_scan_label_artifact(
         labels_path, existing, flows_path, CONTEXT, broad_disabled
     )
+
+
+def test_old_scan_label_schema_is_not_reused() -> None:
+    m5 = load_config(ROOT / "configs" / "scan_source_driven_removal.yaml")
+    old_metadata = pipeline._scan_label_cache_metadata(CONTEXT, m5).copy()
+    old_metadata["schema_version"] = "scan-labels-v2"
+
+    assert not pipeline._cache_metadata_matches(
+        old_metadata, pipeline._scan_label_cache_metadata(CONTEXT, m5)
+    )
+
+
+def test_old_scan_statistics_schema_is_not_reused() -> None:
+    m5 = load_config(ROOT / "configs" / "scan_source_driven_removal.yaml")
+    old_metadata = pipeline._scan_stats_cache_metadata(CONTEXT, m5).copy()
+    old_metadata["schema_version"] = "scan-stats-v2"
+
+    assert not pipeline._cache_metadata_matches(
+        old_metadata, pipeline._scan_stats_cache_metadata(CONTEXT, m5)
+    )

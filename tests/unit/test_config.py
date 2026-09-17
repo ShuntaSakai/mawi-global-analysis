@@ -39,8 +39,8 @@ def test_scan_source_driven_removal_config_uses_approved_strict_thresholds() -> 
     assert config.prefix.top_k is None
     assert config.analysis.overall_ip_scope == "ipv4"
     assert config.scan.strict.enabled is True
-    assert config.scan.strict.min_pattern_count == 20
-    assert config.scan.strict.min_unique_targets == 10
+    assert config.scan.strict.min_pattern_count == 3
+    assert config.scan.strict.min_unique_targets == 2
     assert config.scan.broad.enabled is True
 
 
