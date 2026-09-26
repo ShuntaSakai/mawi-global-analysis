@@ -6,5 +6,5 @@
 独自の解析コードはここに置きません。Agurim は必要な場合に `vendor/agurim/src` で build
 します。
 
-セットアップと実行時の注意点は [実データ実行 runbook](../docs/real-data-execution-runbook.md)、
+セットアップと実行時の注意点は [実データ実行 runbook](../docs/guide/real-data-execution-runbook.md)、
 全体の入口は [ルート README](../README.md) を参照してください。

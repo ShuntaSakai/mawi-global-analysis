@@ -89,7 +89,7 @@ mawi-global-analysis/
 ├── tests/
 ├── scripts/
 ├── vendor/
-├── docs/superpowers/specs/
+├── docs/archive/society-2026/superpowers/specs/
 ├── data/       # gitignored
 ├── results/    # gitignored
 ├── run_pipeline.py

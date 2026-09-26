@@ -15,7 +15,7 @@ Before changing the repository, read in this order:
 semantics. Experiment configuration files define the settings of a particular
 experiment. Use both when a change can affect analysis behavior.
 
-Historical material under `docs/superpowers/` and other existing documents may
+Historical material under `docs/archive/society-2026/superpowers/` and other existing documents may
 help explain why older code exists, but it is background material. It is not a
 current specification and must not override the AI documentation, current
 configuration, code, or tests.

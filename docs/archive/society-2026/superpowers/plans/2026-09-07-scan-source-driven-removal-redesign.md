@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, pandas, PyYAML, pytest, uv.
 
-**Spec:** `docs/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`
+**Spec:** `docs/archive/society-2026/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`
 
 ## Implementation Status (2026-09-07)
 
@@ -32,9 +32,9 @@
 ### Task 1: Record the approved source-driven semantics
 
 **Files:**
-- Modify: `AGENTS.md`, `docs/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`
-- Modify: `docs/superpowers/plans/2026-08-26-mawi-global-analysis-m0-m4-implementation.md`
-- Create: `docs/superpowers/plans/2026-09-07-scan-source-driven-removal-redesign.md`
+- Modify: `AGENTS.md`, `docs/archive/society-2026/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`
+- Modify: `docs/archive/society-2026/superpowers/plans/2026-08-26-mawi-global-analysis-m0-m4-implementation.md`
+- Create: `docs/archive/society-2026/superpowers/plans/2026-09-07-scan-source-driven-removal-redesign.md`
 
 **Interfaces:** Documents define the same terms: strict evidence, scan-like source, broad removal expansion, and M4 human gate.
 

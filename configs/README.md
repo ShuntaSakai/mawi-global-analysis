@@ -8,5 +8,5 @@
 主な設定は `baseline.yaml`、`paper_legacy.yaml`、`threshold_exploration.yaml`、
 `scan_source_driven_removal.yaml` です。
 
-実行方法と実データの注意点は [実データ実行 runbook](../docs/real-data-execution-runbook.md)、
+実行方法と実データの注意点は [実データ実行 runbook](../docs/guide/real-data-execution-runbook.md)、
 全体の入口は [ルート README](../README.md) を参照してください。

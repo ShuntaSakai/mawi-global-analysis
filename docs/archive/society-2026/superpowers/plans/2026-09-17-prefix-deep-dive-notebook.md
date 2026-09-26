@@ -8,7 +8,7 @@
 
 **Tech Stack:** Jupyter, pandas, NumPy, Matplotlib, pytest.
 
-**Spec:** User-approved design in the 2026-09-17 Codex task; `docs/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`.
+**Spec:** User-approved design in the 2026-09-17 Codex task; `docs/archive/society-2026/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`.
 
 ## Global Constraints
 

@@ -7,5 +7,5 @@
 deep dive、multi-dataset validation、発表用図です。生成済み CSV、PCAP、pipeline 実装は
 ここに置きません。
 
-実行に必要な artifact と環境変数は [実データ実行 runbook](../docs/real-data-execution-runbook.md)、
+実行に必要な artifact と環境変数は [実データ実行 runbook](../docs/guide/real-data-execution-runbook.md)、
 全体の入口は [ルート README](../README.md) を参照してください。

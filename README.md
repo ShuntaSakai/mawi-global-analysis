@@ -30,7 +30,7 @@ make -C vendor/agurim/src
 ```
 
 実データの事前確認、実行順序、ストレージ要件の注意点は
-[実データ実行 runbook](docs/real-data-execution-runbook.md) を参照してください。
+[実データ実行 runbook](docs/guide/real-data-execution-runbook.md) を参照してください。
 
 ## ディレクトリ案内
 
@@ -52,6 +52,6 @@ make -C vendor/agurim/src
 利用する実験条件は [configs/](configs/README.md) から選びます。実行済みの結果は
 [results/](results/README.md) の run manifest とともに確認し、Notebook で集計・可視化
 します。実行コマンドと raw data の扱いは、先に
-[実データ実行 runbook](docs/real-data-execution-runbook.md) を確認してください。
+[実データ実行 runbook](docs/guide/real-data-execution-runbook.md) を確認してください。
 
 AI エージェント向けの参照順と研究契約は [docs/agent/](docs/agent/README.md) にあります。

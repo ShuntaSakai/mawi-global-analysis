@@ -8,9 +8,9 @@
 
 **Tech Stack:** Python 3.12, uv, dpkt, pandas, numpy, matplotlib, PyYAML, Pydantic v2, pytest, Jupyter/ipykernel, Aguri/Agurim pinned to `necoma/agurim@ab5c5cc80e9e1229bb66ec83bb25f186898d5e49`.
 
-**Spec:** `docs/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`
+**Spec:** `docs/archive/society-2026/superpowers/specs/2026-08-26-mawi-global-analysis-design.md`
 
-> **2026-09-07 scan-design revision:** This completed M0–M4 implementation history remains intact. Its prospective broad-detector instructions are superseded by `docs/superpowers/plans/2026-09-07-scan-source-driven-removal-redesign.md` and the design spec: only `N_strict` and `M_strict` require human approval; `syn_only_observed` is removal-expansion evidence, not an independent broad detector.
+> **2026-09-07 scan-design revision:** This completed M0–M4 implementation history remains intact. Its prospective broad-detector instructions are superseded by `docs/archive/society-2026/superpowers/plans/2026-09-07-scan-source-driven-removal-redesign.md` and the design spec: only `N_strict` and `M_strict` require human approval; `syn_only_observed` is removal-expansion evidence, not an independent broad detector.
 
 ## Global Constraints
 
