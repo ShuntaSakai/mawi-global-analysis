@@ -13,7 +13,7 @@
 ## Implementation Status (2026-09-07)
 
 - M5 source-driven strict removal and optional broad-evidence expansion are implemented.
-- Human-approved provisional thresholds are `N_strict = 20` and `M_strict = 10` in `configs/scan_source_driven_removal.yaml`; threshold changes remain config-driven and are not final scientific thresholds.
+- Human-approved provisional thresholds are `N_strict = 3` and `M_strict = 2` in `configs/scan_source_driven_removal.yaml`; threshold changes remain config-driven and are not final scientific thresholds.
 - Scan-label cache identity is separated from threshold-free flow and scan-stat identities.
 - A raw MAWI experimental run remains pending. M6 and the final Raw/Strict/Broad comparison have not started.
 

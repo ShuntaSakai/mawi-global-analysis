@@ -60,12 +60,8 @@ be reported with its actual environment, inputs, manifest, and review result.
 ## Provisional decisions and attention points
 
 - The strict and broad removal configuration exists and is executable. Its
-  numeric thresholds are experiment settings, not scientific conclusions.
-- `docs/real-data-execution-runbook.md` describes thresholds of 20 and 10,
-  while the current `scan_source_driven_removal.yaml` configures 3 and 2.
-  Treat the config as the current executable setting; resolve this historical
-  documentation discrepancy before relying on the runbook for threshold
-  interpretation.
+  current provisional thresholds are pattern count 3 and unique targets 2.
+  They are experiment settings, not scientific conclusions.
 - Historical plans and milestone documents remain in the repository for
   context but are not current specification authority.
 - Existing result artifacts and executed notebooks are evidence to inspect,

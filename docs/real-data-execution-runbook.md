@@ -56,7 +56,7 @@ scan-like sourceの全trafficを削除するものではない。観測された
 
 ### Threshold
 
-`configs/scan_source_driven_removal.yaml` の現在の値、`N_strict = 20` と `M_strict = 10` は**暫定のhuman-approved値**である。最終的または科学的に最適な値として表現してはならない。
+`configs/scan_source_driven_removal.yaml` の現在の値、`N_strict = 3` と `M_strict = 2` は**暫定のhuman-approved値**である。最終的または科学的に最適な値として表現してはならない。
 
 ## 3. 新しい研究室PCのセットアップ
 
@@ -165,7 +165,7 @@ artifactの最終的なpathとrow countは、推測せずmanifestの`artifacts`�
 
 ## 8. scan-source-driven実行
 
-次に、暫定20/10を含むsource-driven removal configを実行する。
+次に、暫定3/2を含むsource-driven removal configを実行する。
 
 ```bash
 uv run python run_pipeline.py \
@@ -179,7 +179,7 @@ run nameは`scan_source_driven_removal`である。flow generation semanticsが�
 
 - `source_scan_windows.csv` と `source_scan_summary.csv` にsource scan統計があること。
 - `flow_labels.csv` にRaw / Strict / Broad comparison用のflow labelsがあること。
-- Strict/Broad labelが暫定20/10 config hashに対応すること。
+- Strict/Broad labelが暫定3/2 config hashに対応すること。
 - manifestの`status`が`success`であり、stageが`completed`または正当な`reused`であること。
 
 このrunの`prefixes.csv`と`flow_prefix_membership.csv`はRaw trafficから導出された固定set/membershipとしてcomparisonに用いる。条件別のprefix再選択はしない。
@@ -298,7 +298,7 @@ Run Allで、datasetごと・conditionごとに少なくとも次を確認する
 - Raw/Strict/Broad actual removal volumes
 - actual research result
 - multi-day real-data reproducibility
-- provisional 20/10のscientific adequacy
+- provisional 3/2のscientific adequacy
 
 「実装が通った」と「研究仮説が実データで確認された」は別の主張である。本Runbookの実行は後者の検証を開始する手順であり、事前にその成立を主張するものではない。
 
