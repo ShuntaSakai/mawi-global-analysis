@@ -24,8 +24,8 @@ scientific conclusions.
 
 For a concrete experiment, also read its file in `configs/`, then the relevant
 implementation and tests. Existing documents outside `docs/agent/`, including
-historical designs and plans in `docs/archive/society-2026/superpowers/`, are background only unless
-a current task explicitly asks for historical context.
+historical designs and plans in `docs/archive/society-2026/superpowers/`, are
+background only unless a current task explicitly asks for historical context.
 
 ## Authority and scope
 

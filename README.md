@@ -37,7 +37,7 @@ make -C vendor/agurim/src
 | ディレクトリ | 役割 |
 | --- | --- |
 | [configs/](configs/README.md) | 名前付き実験の YAML 設定。 |
-| [data/](data/) | raw capture と再利用可能な処理済み cache。通常は Git 管理外。 |
+| [data/](data/README.md) | raw capture と再利用可能な処理済み cache。データ本体は通常 Git 管理外。 |
 | [datasets/](datasets/README.md) | batch 実行で使うデータセット一覧。 |
 | [docs/](docs/) | 運用・設計・AI 向けドキュメント。 |
 | [notebooks/](notebooks/README.md) | 結果の集計、検査、可視化。 |

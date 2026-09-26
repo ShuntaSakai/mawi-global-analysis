@@ -224,7 +224,7 @@ removalが極端に大きい、prefixがゼロ、unexpected `inf`、subset/monot
 
 ## 11. multi-dataset実行
 
-batchへはsingle-datasetが正常に完走し、そのsanity reviewを終えてから進む。`datasets/validation_days.txt` は現在repositoryに存在しないため、実行前に研究対象のdataset IDを1行ずつ入れたUTF-8 fileとして作成する必要がある（空行は無視され、duplicate IDは拒否される）。
+batchへはsingle-datasetが正常に完走し、そのsanity reviewを終えてから進む。`datasets/validation_days.txt` には現在の検証対象 dataset ID が1行ずつ記録されている。研究対象を変更する場合は、このUTF-8 fileを更新する（空行は無視され、duplicate IDは拒否される）。
 
 single configの例:
 

@@ -3,10 +3,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ipynb_checkpoints/
-data/
+data/*
+!data/README.md
 results/*
-!results/202604081400/
-results/202604081400/*
-!results/202604081400/prefix_deep_dive/
-!results/202604081400/prefix_deep_dive/**
 *.egg-info/
+.DS_Store
