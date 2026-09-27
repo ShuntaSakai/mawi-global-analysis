@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import json
 import struct
+import gzip
 from pathlib import Path
 
 import dpkt
@@ -98,6 +99,27 @@ def test_extracts_only_relevant_observations_and_reloads_after_source_deletion(t
     context, source_context = aggregate_one_packet_context_chunks(_cohort(), [reloaded])
     assert context.iloc[0]["same_5tuple_packet_count_24h"] == 2
     assert source_context.iloc[0]["plain_syn_packet_count_24h"] == 2
+
+
+def test_disk_revalidated_phase5a_checkpoint_permits_owned_raw_deletion(tmp_path: Path) -> None:
+    from mawi_global_analysis.ditl_downloader import delete_owned_raw_after_checkpoint, write_ownership_record
+    from mawi_global_analysis.one_packet_context_chunks import extract_one_packet_chunk_observations, load_completed_chunk_observations
+
+    spool = tmp_path / "spool"; spool.mkdir()
+    unpacked = spool / "temporary.pcap"
+    _pcap(unpacked, [(100.0, _tcp_frame("198.51.100.1", 40000, "192.0.2.1", 443, dpkt.tcp.TH_SYN))])
+    capture = spool / "202604081400.pcap.gz"
+    capture.write_bytes(gzip.compress(unpacked.read_bytes()))
+    write_ownership_record(capture, "202604081400", "https://example.test/202604081400.pcap.gz")
+    cache = tmp_path / "cache"
+    extract_one_packet_chunk_observations(capture, _cohort(), cache, "202604081400", source_url="https://example.test/202604081400.pcap.gz")
+    checkpoint = load_completed_chunk_observations(cache, "202604081400", _cohort())
+
+    from mawi_global_analysis.one_packet_context_chunks import cohort_identity
+    assert delete_owned_raw_after_checkpoint(capture, spool, checkpoint,
+        expected_cohort_identity=cohort_identity(_cohort()), expected_chunk_id="202604081400",
+        expected_source_url="https://example.test/202604081400.pcap.gz")
+    assert not capture.exists()
 
 
 def test_completed_cache_rejects_corruption_changed_source_and_changed_cohort(tmp_path: Path) -> None:

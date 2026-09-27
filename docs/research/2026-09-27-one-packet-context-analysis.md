@@ -46,3 +46,18 @@ raw chunk may be deleted
 source URL（利用可能な場合）、filename、SHA-256、size、実測first/last timestamp、artifact
 checksumを残すため、raw captureが後に存在しなくても再現可能なcontext集約に使用できる。HTTP取得と
 automatic deletionはPhase 5Bの範囲である。
+
+## Phase 5B: sequential acquisition and raw retention
+
+Phase 5Bは既存source pipelineを呼ばない。先に14:00 chunkを取得して
+`scan_source_driven_removal` を成功させ、そのsource-run checksumに一致するlocal target
+chunkをDITL context orchestrationへ渡す。残りの95 chunkは一つずつHTTP streaming downloadし、
+`.part` を fsync/rename してdownload ownership record（URL, path, SHA-256, size）を作る。
+
+各chunkはPhase 5A cacheをdiskから完全再検証した後だけ削除可能である。削除は専用
+`data/<dataset>/raw/ditl_stream/<context-run-name>/` spool内で、ownership record、raw checksum、
+cache source checksumが全て一致する場合に限る。human-supplied captureは削除しない。targetは
+final artifacts/manifestの成功と `load_one_packet_context()` の再検証まで保持する。final manifestは
+rawが削除されても96 chunkのURL/filename/SHA-256/size/timestamp/artifact identityを保持し、
+`raw_retention_policy: delete_after_validated_checkpoint` を記録する。chunk IDはoperational identityであり、
+scientific timestampの代替にはならない。

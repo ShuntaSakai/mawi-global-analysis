@@ -130,6 +130,53 @@ df -h .
 test -d vendor/agurim
 ```
 
+## 6A. DITL one-packet context (Phase 5B)
+
+This workflow is separate from the source pipeline. It is sequential and does
+not concatenate captures or make concurrent requests. Substitute a verified
+user-supplied URL template; no MAWI URL is hardcoded here.
+
+First acquire the 14:00 chunk into the context run's dedicated spool:
+
+```bash
+uv run python download_ditl_chunk.py \
+  --chunk-id 202604081400 \
+  --url-template 'https://<verified-host>/{chunk_id}.pcap.gz' \
+  --output-directory data/202604081400/raw/ditl_stream/one-packet-context-20260408
+```
+
+Then run the existing source workflow explicitly, using the acquired file as
+its input (the exact `--input` path must match the file above):
+
+```bash
+uv run python run_pipeline.py \
+  --dataset 202604081400 \
+  --config configs/scan_source_driven_removal.yaml \
+  --input data/202604081400/raw/ditl_stream/one-packet-context-20260408/202604081400.pcap.gz
+```
+
+Finally run the automatic DITL context workflow:
+
+```bash
+uv run python run_ditl_one_packet_context.py \
+  --dataset 202604081400 \
+  --source-run scan_source_driven_removal \
+  --date 20260408 \
+  --target-chunk 202604081400 \
+  --target-chunk-path data/202604081400/raw/ditl_stream/one-packet-context-20260408/202604081400.pcap.gz \
+  --url-template 'https://<verified-host>/{chunk_id}.pcap.gz' \
+  --context-run-name one-packet-context-20260408 \
+  --root "$PWD"
+```
+
+The durable Phase 5A cache is the resume checkpoint. A completed cache skips
+download; a completed owned raw left after a crash is reused and removed only
+after cache validation. `.part` files are never parsed as captures. The target
+chunk remains until final aggregation, manifest publication, and final loader
+validation. A human-provided target or any file outside the downloader spool
+is left intact. Final provenance remains usable after raw deletion. This
+runbook does not claim a successful real-MAWI execution.
+
 config validationはpipelineによるconfig load時に行われる。実データ取得もartifact書込みもしない計画確認には、以下のdry-runを使える。
 
 ```bash

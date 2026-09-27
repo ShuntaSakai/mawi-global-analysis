@@ -47,8 +47,16 @@ cache of only target-tuple and relevant plain-SYN observations. Validated cache
 artifacts are reusable without the raw capture and aggregate deterministically
 across chunk boundaries and arbitrary processing order. Final context manifests
 can record `input_mode: ditl_chunks` and direct 14:00 target-chunk source-run
-provenance while retaining legacy full-capture context runs. Network retrieval
-and automatic raw-capture deletion are not implemented.
+provenance while retaining legacy full-capture context runs.
+
+Phase 5B adds a standard-library, sequential DITL downloader and an explicit
+DITL context orchestrator. It requires an already-successful source run rather
+than invoking the source pipeline. A downloader-owned raw chunk is deleted only
+after its durable Phase 5A cache has been reloaded and fully validated; source
+target deletion additionally waits for final context publication and loader
+validation. Human-provided and outside-spool files are never automatically
+deleted. This is implementation verification support only; no real MAWI run is
+recorded.
 
 The primary notebooks currently present are legacy reproduction, scan-threshold
 exploration, several main prefix-comparison variants, prefix deep-dive,

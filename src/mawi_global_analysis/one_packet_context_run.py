@@ -340,6 +340,7 @@ def _validated_ditl_provenance(
         pass
     return {
         "input_mode": "ditl_chunks",
+        "raw_retention_policy": "delete_after_validated_checkpoint",
         "input_identity": stable_json_hash({"chunk_identities": [record["identity"] for record in records]}),
         "ditl_chunks": records,
         "source_target_chunk_id": target_chunk_id,
