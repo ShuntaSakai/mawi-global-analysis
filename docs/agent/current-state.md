@@ -34,6 +34,13 @@ source-window and source-summary statistics, run-specific flow labels,
 membership mappings, manifests, and batch planning/execution. It records
 Raw/Strict/Broad inclusion decisions for comparison.
 
+The repository also supports timezone-window capture extraction, construction
+of the Broad-remaining one-packet cohort, targeted streaming full-capture
+same-5-tuple/reverse context, applicable plain-SYN source context, and
+provenance-aware context manifests, artifacts, and loaders. The follow-up
+Notebook `05_one_packet_context.ipynb` presents those artifacts descriptively;
+it does not parse packet captures or establish scientific conclusions.
+
 The primary notebooks currently present are legacy reproduction, scan-threshold
 exploration, several main prefix-comparison variants, prefix deep-dive,
 multi-dataset validation, and society-presentation figures.
@@ -43,11 +50,15 @@ multi-dataset validation, and society-presentation figures.
 Unit and integration tests cover flow construction, byte accounting, config
 validation, cache and manifest identity, prefix and membership semantics,
 scan-window facts and labels, pipeline stages, batch behavior, legacy
-validation, and notebook structure/provenance expectations. Fixture captures
-and legacy golden artifacts are present for selected validation paths.
+validation, one-packet context streaming/provenance/loading/CLI behavior, and
+notebook structure/provenance expectations. Fixture captures and legacy golden
+artifacts are present for selected validation paths. These capabilities are
+implemented and implementation verified; this evidence does not validate them
+on real data.
 
-This document does not claim a fresh full-suite run; consult current CI or run
-the relevant verification command before reporting test status for a change.
+The Phase 4 one-packet-context verification run completed on 2026-09-27 with
+`uv run pytest -q`: 307 passed. Consult current CI or rerun the relevant
+verification command before reporting test status for a later change.
 
 ## Real-data validated
 

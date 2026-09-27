@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import dpkt
+import pandas as pd
 import pytest
 
 from mawi_global_analysis.hashing import sha256_file
@@ -107,6 +108,46 @@ def test_extract_supports_pcapng_input(tmp_path: Path) -> None:
     extract_capture_window(source, output, window_start=_time(1.0), window_end=_time(1.1))
 
     assert _frames(output) == _frames(PCAP_PATH)[:1]
+
+
+def test_extracted_subcapture_preserves_nanosecond_target_identity_for_context(
+    tmp_path: Path,
+) -> None:
+    """A context scan must match a target back to its nanosecond full-capture record."""
+    from mawi_global_analysis.capture_window import extract_capture_window
+    from mawi_global_analysis.one_packet_context import scan_one_packet_context
+
+    tcp = dpkt.tcp.TCP(sport=40000, dport=443, flags=dpkt.tcp.TH_SYN)
+    tcp.off = 5
+    ip = dpkt.ip.IP(
+        src=b"\xc6\x33\x64\x01", dst=b"\xc0\x00\x02\x01",
+        p=dpkt.ip.IP_PROTO_TCP, ttl=64, data=tcp,
+    )
+    ip.len = len(ip)
+    frame = bytes(dpkt.ethernet.Ethernet(
+        src=b"\x00" * 6, dst=b"\x01" * 6,
+        type=dpkt.ethernet.ETH_TYPE_IP, data=ip,
+    ))
+    source = tmp_path / "full-nanosecond.pcap"
+    target_timestamp = 10.000000123
+    with source.open("wb") as output:
+        writer = dpkt.pcap.Writer(output, nano=True)
+        writer.writepkt(frame, ts=target_timestamp)
+        writer.close()
+
+    subcapture = tmp_path / "window.pcap"
+    extract_capture_window(source, subcapture, _time(10), _time(11))
+    with subcapture.open("rb") as capture:
+        extracted_timestamp, _ = next(iter(dpkt.pcap.Reader(capture)))
+    cohort = pd.DataFrame([{
+        "source_flow_id": 1, "target_timestamp": extracted_timestamp,
+        "protocol": 6, "src_ip": "198.51.100.1", "src_port": 40000,
+        "dst_ip": "192.0.2.1", "dst_port": 443,
+    }])
+
+    context = scan_one_packet_context(source, cohort)
+
+    assert context.loc[0, "target_timestamp"] == float(extracted_timestamp)
 
 
 def test_extract_rejects_truncated_input_without_a_successful_output(tmp_path: Path) -> None:

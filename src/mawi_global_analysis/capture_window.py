@@ -101,7 +101,12 @@ def extract_capture_window(
                         f"malformed or unreadable PCAP/PCAPNG header: {source}"
                     ) from exc
 
-                writer = dpkt.pcap.Writer(raw_output, linktype=reader.datalink())
+                # Standard PCAP permits nanosecond record timestamps.  Preserve
+                # identity with a PCAPNG/nanosecond source because downstream
+                # context matching uses the extracted target timestamp.
+                writer = dpkt.pcap.Writer(
+                    raw_output, linktype=reader.datalink(), nano=True
+                )
                 for timestamp, frame, _, _ in packets:
                     if start_timestamp <= timestamp < end_timestamp:
                         writer.writepkt(frame, ts=timestamp)

@@ -282,7 +282,78 @@ Run Allで、datasetごと・conditionごとに少なくとも次を確認する
 
 このNotebookは、single-dayで見た傾向が別datasetでも再現するかを検証するためのものだ。single-dayの結果を既定の結論として扱うためのものではない。
 
-## 14. まだ検証されていないこと
+## 14. one-packet context workflow
+
+このworkflowは、`scan_source_driven_removal` の15分subcapture runでBroad除外後に残った
+one-packet flowを、同じDITL匿名化domainのfull captureに限定して観測する。full 24h captureは
+canonical flow化せず、対象tuple/reverse contextをstreamingで探索する。
+
+事前にfull DITL capture、15分subcapture、canonical flow cache、run-local artifact、context artifactを
+置ける容量を確認する。正確な必要容量は未確立であるためGB数を推測しない。15分抽出元のfull DITLと
+context scanner入力は同一ファイルidentity/checksumでなければならず、source runはその抽出captureを
+入力として成功している必要がある。
+
+```text
+DITL full capture
+  ↓
+extract 14:00–14:15 subcapture
+  ↓
+run scan_source_driven_removal on the subcapture
+  ↓
+run one-packet context analysis against the full DITL
+  ↓
+load 05_one_packet_context.ipynb
+```
+
+例えばfull captureを既に配置した場合、timezone offsetを含む時刻で抽出する。
+
+```bash
+uv run python scripts/extract_capture_window.py \
+  --input <full-ditl-capture> \
+  --output <15-minute-subcapture.pcap> \
+  --start 2026-04-08T14:00:00+09:00 \
+  --end 2026-04-08T14:15:00+09:00
+
+uv run python run_pipeline.py \
+  --input <15-minute-subcapture.pcap> \
+  --dataset-id 202604081400 \
+  --config configs/scan_source_driven_removal.yaml \
+  --run-name scan_source_driven_removal
+
+uv run python run_one_packet_context.py \
+  --dataset 202604081400 \
+  --source-run scan_source_driven_removal \
+  --full-capture <full-ditl-capture> \
+  --context-run-name one-packet-context-20260408 \
+  --root "$PWD"
+```
+
+The pipeline input argument is the existing `--input` interface; choose a dataset/run arrangement whose
+source-run manifest records that extracted capture. The context command writes a manifest and three
+manifest-declared artifacts under `results/<dataset>/<context-run-name>/`:
+
+```text
+context_manifest.json
+one_packet_cohort.csv
+one_packet_context.csv
+one_packet_source_context.csv
+```
+
+Open the Notebook only through the context manifest loader:
+
+```bash
+export MAWI_ANALYSIS_ROOT="$PWD"
+export MAWI_DATASET_ID=202604081400
+export MAWI_CONTEXT_RUN_NAME=one-packet-context-20260408
+jupyter notebook notebooks/05_one_packet_context.ipynb
+```
+
+Before interpretation, confirm successful source/context manifests, matching full-capture and extracted-window
+checksums, one-to-one cohort/context/source-context linkage, and the notebook's window-boundary sanity report.
+No real DITL execution has yet been validated in this repository. Implementation and fixture verification are not
+scientific validation.
+
+## 15. まだ検証されていないこと
 
 以下を混同しない。
 
@@ -302,7 +373,7 @@ Run Allで、datasetごと・conditionごとに少なくとも次を確認する
 
 「実装が通った」と「研究仮説が実データで確認された」は別の主張である。本Runbookの実行は後者の検証を開始する手順であり、事前にその成立を主張するものではない。
 
-## 15. 推奨実行順序
+## 16. 推奨実行順序
 
 1. 容量の大きいfilesystemへcloneし、Python/uv/submodule/Aguriをsetupする。
 2. `df -h .` とanalysis root（カレントディレクトリ）を確認する。
