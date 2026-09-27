@@ -410,6 +410,43 @@ def _strict_pcapng_packets(
         )
 
 
+def iter_capture_packet_records(path: Path) -> Iterator[tuple[float, bytes, int, int]]:
+    """Yield strict Ethernet capture records with their capture length metadata.
+
+    This public streaming primitive preserves the timestamp, captured-frame
+    length, and original-frame length recorded by PCAP/PCAPNG.  It deliberately
+    does not decode or aggregate packets, so consumers with packet-level
+    observations can share the repository's strict reader without depending on
+    private parser helpers.
+    """
+    capture_path = Path(path)
+    try:
+        with _open_capture(capture_path) as capture:
+            try:
+                capture_magic = capture.read(len(_PCAPNG_MAGIC))
+                capture.seek(0)
+                if capture_magic == _PCAPNG_MAGIC:
+                    reader = dpkt.pcapng.Reader(capture)
+                    packets = _strict_pcapng_packets(capture, reader)
+                else:
+                    reader = dpkt.pcap.Reader(capture)
+                    packets = _strict_pcap_packets(capture, reader)
+            except (dpkt.dpkt.Error, ValueError) as exc:
+                raise PcapParseError(
+                    f"malformed or unreadable PCAP/PCAPNG header: {capture_path}"
+                ) from exc
+            if reader.datalink() != dpkt.pcap.DLT_EN10MB:
+                raise PcapParseError(
+                    "unsupported PCAP/PCAPNG link type "
+                    f"{reader.datalink()}; Ethernet is required"
+                )
+            yield from packets
+    except PcapParseError:
+        raise
+    except (OSError, EOFError, gzip.BadGzipFile) as exc:
+        raise PcapParseError(f"unreadable PCAP: {capture_path}: {exc}") from exc
+
+
 def _decode_packet(
     frame: bytes, packet_index: int, *, capture_truncated: bool
 ) -> DecodedPacket | _CaptureTruncatedUndecodable | None:
