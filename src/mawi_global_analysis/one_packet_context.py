@@ -419,6 +419,7 @@ def _tcp_flags_text(flags: int | None) -> str | None:
     if flags is None:
         return None
     ordered_flags = (
+        (dpkt.tcp.TH_NS, "N"),
         (dpkt.tcp.TH_FIN, "F"), (dpkt.tcp.TH_SYN, "S"),
         (dpkt.tcp.TH_RST, "R"), (dpkt.tcp.TH_PUSH, "P"),
         (dpkt.tcp.TH_ACK, "A"), (dpkt.tcp.TH_URG, "U"),

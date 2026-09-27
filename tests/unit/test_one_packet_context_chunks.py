@@ -59,6 +59,48 @@ def _cohort() -> pd.DataFrame:
     return pd.DataFrame([row], columns=ONE_PACKET_COHORT_COLUMNS)
 
 
+def _target_observation(flags: object) -> pd.DataFrame:
+    from mawi_global_analysis.one_packet_context_chunks import TARGET_OBSERVATION_COLUMNS
+
+    return pd.DataFrame([{
+        "timestamp": 100.0, "src_ip": "198.51.100.1", "src_port": 40000,
+        "dst_ip": "192.0.2.1", "dst_port": 443, "protocol": 6,
+        "captured_frame_length": 54, "original_frame_length": 54,
+        "ip_total_length": 40, "transport_payload_length": 0,
+        "tcp_flags_raw": flags,
+    }], columns=TARGET_OBSERVATION_COLUMNS)
+
+
+@pytest.mark.parametrize("flags", [0, 255, 256, 319, 386, 450, 511])
+def test_chunk_observation_validator_accepts_representable_9_bit_tcp_flags(flags: int) -> None:
+    from mawi_global_analysis.one_packet_context_chunks import _validate_observation_values
+
+    _validate_observation_values(_target_observation(flags), is_target=True)
+
+
+@pytest.mark.parametrize("flags", [-1, 512, 1.5])
+def test_chunk_observation_validator_rejects_invalid_tcp_flags(flags: object) -> None:
+    from mawi_global_analysis.one_packet_context_chunks import ChunkCacheConflictError, _validate_observation_values
+
+    with pytest.raises(ChunkCacheConflictError, match="invalid TCP flags"):
+        _validate_observation_values(_target_observation(flags), is_target=True)
+
+
+def test_chunk_cache_preserves_raw_ninth_bit_tcp_flags(tmp_path: Path) -> None:
+    from mawi_global_analysis.one_packet_context_chunks import (
+        extract_one_packet_chunk_observations,
+        load_completed_chunk_observations,
+    )
+
+    capture = tmp_path / "ns.pcap"
+    flags = 319
+    _pcap(capture, [(100.0, _tcp_frame("198.51.100.1", 40000, "192.0.2.1", 443, flags))])
+    cache = tmp_path / "cache"
+
+    extract_one_packet_chunk_observations(capture, _cohort(), cache, "ns")
+    assert load_completed_chunk_observations(cache, "ns", _cohort()).target_packets.iloc[0]["tcp_flags_raw"] == flags
+
+
 def test_extracts_only_relevant_observations_and_reloads_after_source_deletion(tmp_path: Path) -> None:
     from mawi_global_analysis.one_packet_context_chunks import (
         SOURCE_SYN_OBSERVATION_COLUMNS,

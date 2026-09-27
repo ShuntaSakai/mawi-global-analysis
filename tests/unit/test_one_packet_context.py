@@ -190,6 +190,8 @@ def test_scanner_collects_packet_facts_context_and_ignores_unrelated_packets(tmp
     ("flags", "text"),
     [
         (dpkt.tcp.TH_SYN, "S"),
+        (dpkt.tcp.TH_NS, "N"),
+        (dpkt.tcp.TH_NS | dpkt.tcp.TH_SYN, "NS"),
         (dpkt.tcp.TH_SYN | dpkt.tcp.TH_ACK, "SA"),
         (dpkt.tcp.TH_ACK, "A"),
         (dpkt.tcp.TH_RST | dpkt.tcp.TH_ACK, "RA"),
@@ -204,6 +206,19 @@ def test_scanner_uses_fixed_tcp_flag_text_order(tmp_path: Path, flags: int, text
     _pcap(capture, [(10.0, _tcp_frame("198.51.100.1", 40000, "192.0.2.1", 443, flags))])
     cohort = _cohort(_flow(1, start_time=10))
     assert scan_one_packet_context(capture, cohort).iloc[0]["tcp_flags_text"] == text
+
+
+@pytest.mark.parametrize("flags", [dpkt.tcp.TH_SYN, dpkt.tcp.TH_SYN | dpkt.tcp.TH_NS | dpkt.tcp.TH_CWR | dpkt.tcp.TH_ECE])
+def test_source_context_remains_applicable_for_syn_without_ack_even_with_other_flags(
+    tmp_path: Path, flags: int
+) -> None:
+    from mawi_global_analysis.one_packet_context import scan_one_packet_contexts
+
+    capture = tmp_path / "plain-syn.pcap"
+    _pcap(capture, [(10.0, _tcp_frame("198.51.100.1", 40000, "192.0.2.1", 443, flags))])
+
+    _, source_context = scan_one_packet_contexts(capture, _cohort(_flow(1, start_time=10.0)))
+    assert source_context.iloc[0]["source_context_applicable"] == True
 
 
 def test_scanner_keeps_capture_and_original_lengths_distinct_and_udp_flags_null(tmp_path: Path) -> None:

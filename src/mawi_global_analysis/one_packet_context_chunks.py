@@ -297,7 +297,7 @@ def _validate_observation_values(frame: pd.DataFrame, *, is_target: bool) -> Non
                 if not _integer_number(values[field]) or int(values[field]) < 0:
                     raise ChunkCacheConflictError("chunk artifact has invalid length")
             flags = values["tcp_flags_raw"]
-            if not pd.isna(flags) and (not _integer_number(flags) or not 0 <= int(flags) <= 255):
+            if not pd.isna(flags) and (not _integer_number(flags) or not 0 <= int(flags) <= 0x1FF):
                 raise ChunkCacheConflictError("chunk artifact has invalid TCP flags")
 
 
