@@ -34,6 +34,16 @@ class RunData:
 
 
 @dataclass(frozen=True)
+class OnePacketContextData:
+    """Manifest-validated context-analysis artifacts for one source run."""
+
+    cohort: pd.DataFrame
+    context: pd.DataFrame
+    source_context: pd.DataFrame
+    manifest: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class BatchJobData:
     """One manifest-ordered batch job and its recorded provenance metadata."""
 
@@ -160,6 +170,37 @@ def load_run(dataset_id: str, run_name: str, root: Path = Path(".")) -> RunData:
         scan_summary=scan_summary,
         manifest=manifest,
     )
+
+
+def load_one_packet_context(
+    dataset_id: str, context_run_name: str, root: Path = Path(".")
+) -> OnePacketContextData:
+    """Load a successful one-packet context run only through its manifest."""
+    from mawi_global_analysis.one_packet_context import (
+        ONE_PACKET_COHORT_COLUMNS,
+        ONE_PACKET_CONTEXT_COLUMNS,
+        ONE_PACKET_SOURCE_CONTEXT_COLUMNS,
+    )
+
+    root = Path(root).resolve()
+    manifest_path = root / "results" / dataset_id / context_run_name / "context_manifest.json"
+    manifest = _read_manifest(manifest_path)
+    if manifest.get("dataset_id") != dataset_id or manifest.get("context_run_name") != context_run_name:
+        raise ValueError(f"context manifest identity does not match requested run: {manifest_path}")
+    if manifest.get("status") != "success":
+        raise ValueError(f"context manifest is not successful: {manifest_path}")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError(f"context manifest has invalid artifacts object: {manifest_path}")
+    cohort = _read_context_csv(artifacts, "one_packet_cohort", ONE_PACKET_COHORT_COLUMNS, root)
+    context = _read_context_csv(artifacts, "one_packet_context", ONE_PACKET_CONTEXT_COLUMNS, root)
+    source_context = _read_context_csv(artifacts, "one_packet_source_context", ONE_PACKET_SOURCE_CONTEXT_COLUMNS, root)
+    linkage = set(zip(cohort["source_flow_id"], cohort["target_timestamp"]))
+    if set(zip(context["source_flow_id"], context["target_timestamp"])) != linkage:
+        raise ValueError("one_packet_context does not match cohort source_flow_id linkage")
+    if set(zip(source_context["source_flow_id"], source_context["target_timestamp"])) != linkage:
+        raise ValueError("one_packet_source_context does not match cohort source_flow_id linkage")
+    return OnePacketContextData(cohort, context, source_context, manifest)
 
 
 def _batch_root(manifest_path: Path) -> Path:
@@ -376,4 +417,26 @@ def _read_csv(
                 f"{artifact_name} row count disagrees with manifest: "
                 f"expected {expected_row_count}, got {len(frame)}"
             )
+    return frame
+
+
+def _read_context_csv(
+    artifacts: dict[str, Any], artifact_name: str, expected_columns: tuple[str, ...], root: Path
+) -> pd.DataFrame:
+    _, entry = _artifact_entry(artifacts, artifact_name, (), required=True)
+    assert entry is not None
+    frame = _read_csv(artifact_name, entry, expected_columns, root)
+    if tuple(frame.columns) != expected_columns:
+        raise ValueError(f"{artifact_name} schema does not match expected column order")
+    value = entry.get("path")
+    assert isinstance(value, str)
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    expected_hash = entry.get("sha256")
+    if not isinstance(expected_hash, str) or not expected_hash:
+        raise ValueError(f"artifact entry missing sha256: {artifact_name}")
+    from mawi_global_analysis.hashing import sha256_file
+    if sha256_file(path) != expected_hash:
+        raise ValueError(f"artifact checksum disagrees with manifest: {artifact_name}")
     return frame

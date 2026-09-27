@@ -249,3 +249,61 @@ def test_scanner_requires_exactly_one_target_match(tmp_path: Path, packets: list
     cohort = _cohort(_flow(1, start_time=10))
     with pytest.raises(ValueError, match=message):
         scan_one_packet_context(capture, cohort)
+
+
+def test_source_context_uses_plain_syn_source_and_inclusive_windows(tmp_path: Path) -> None:
+    from mawi_global_analysis.one_packet_context import scan_one_packet_contexts
+
+    capture = tmp_path / "source-context.pcap"
+    source = "198.51.100.1"
+    target_time = 4000.0
+    target = _tcp_frame(source, 40000, "192.0.2.1", 443, dpkt.tcp.TH_SYN)
+    _pcap(capture, [
+        (target_time - 3600, _tcp_frame(source, 40100, "192.0.2.10", 80, dpkt.tcp.TH_SYN)),
+        (target_time - 900, _tcp_frame(source, 40101, "192.0.2.11", 81, dpkt.tcp.TH_SYN)),
+        (target_time - 300, _tcp_frame(source, 40102, "192.0.2.12", 82, dpkt.tcp.TH_SYN)),
+        (target_time, target),
+        (target_time + 300, _tcp_frame(source, 40103, "192.0.2.12", 82, dpkt.tcp.TH_SYN)),
+        (target_time + 900, _tcp_frame(source, 40104, "192.0.2.13", 83, dpkt.tcp.TH_SYN)),
+        (target_time + 3600, _tcp_frame(source, 40105, "192.0.2.14", 84, dpkt.tcp.TH_SYN)),
+        (target_time + 3601, _tcp_frame(source, 40106, "192.0.2.15", 85, dpkt.tcp.TH_SYN)),
+        (target_time, _tcp_frame("203.0.113.1", 50000, "192.0.2.99", 53, dpkt.tcp.TH_SYN)),
+    ])
+
+    _, source_context = scan_one_packet_contexts(capture, _cohort(_flow(1, start_time=target_time)))
+    row = source_context.iloc[0]
+    assert row["source_context_applicable"] == True
+    assert row["context_source_ip"] == source
+    assert row["plain_syn_packet_count_5m"] == 3
+    assert row["plain_syn_packet_count_15m"] == 5
+    assert row["plain_syn_packet_count_1h"] == 7
+    assert row["plain_syn_packet_count_24h"] == 8
+    assert row["unique_target_count_5m"] == 2
+    assert row["unique_dst_ip_count_5m"] == 2
+    assert row["unique_dst_port_count_5m"] == 2
+    assert row["unique_target_count_24h"] == 7
+
+
+@pytest.mark.parametrize(
+    ("flow", "frame"),
+    [
+        (_flow(1, start_time=10.0), _tcp_frame("198.51.100.1", 40000, "192.0.2.1", 443, dpkt.tcp.TH_ACK)),
+        (_flow(1, start_time=10.0, src_ip="198.51.100.2", src_port=50000, dst_ip="192.0.2.2", dst_port=53, protocol=17), _udp_frame()),
+    ],
+)
+def test_source_context_does_not_infer_source_for_non_plain_syn_targets(
+    tmp_path: Path, flow: dict[str, object], frame: bytes
+) -> None:
+    from mawi_global_analysis.one_packet_context import scan_one_packet_contexts
+
+    capture = tmp_path / "not-applicable.pcap"
+    _pcap(capture, [
+        (10.0, frame),
+        (11.0, _tcp_frame(str(flow["src_ip"]), 40100, "192.0.2.99", 80, dpkt.tcp.TH_SYN)),
+    ])
+
+    _, source_context = scan_one_packet_contexts(capture, _cohort(flow))
+    row = source_context.iloc[0]
+    assert row["source_context_applicable"] == False
+    assert row["context_source_ip"] is None
+    assert all(row[column] is None for column in source_context.columns if column.startswith(("plain_syn_", "unique_")))

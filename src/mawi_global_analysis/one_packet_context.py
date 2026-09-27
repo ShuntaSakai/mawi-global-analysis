@@ -49,6 +49,18 @@ ONE_PACKET_CONTEXT_COLUMNS = (
     *tuple(f"same_5tuple_after_{seconds}s" for seconds in _THRESHOLDS),
 )
 
+_SOURCE_WINDOWS = (("5m", 5 * 60), ("15m", 15 * 60), ("1h", 60 * 60))
+ONE_PACKET_SOURCE_CONTEXT_COLUMNS = (
+    "source_flow_id", "target_timestamp", "source_context_applicable",
+    "context_source_ip",
+    *(f"plain_syn_packet_count_{name}" for name, _ in _SOURCE_WINDOWS),
+    *(f"unique_target_count_{name}" for name, _ in _SOURCE_WINDOWS),
+    *(f"unique_dst_ip_count_{name}" for name, _ in _SOURCE_WINDOWS),
+    *(f"unique_dst_port_count_{name}" for name, _ in _SOURCE_WINDOWS),
+    "plain_syn_packet_count_24h", "unique_target_count_24h",
+    "unique_dst_ip_count_24h", "unique_dst_port_count_24h",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _Packet:
@@ -61,6 +73,13 @@ class _Packet:
     ip_total_length: int
     transport_payload_length: int
     tcp_flags_raw: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceObservation:
+    timestamp: float
+    dst_ip: str
+    dst_port: int
 
 
 @dataclass(slots=True)
@@ -124,11 +143,24 @@ def build_one_packet_cohort_from_run(run: RunData) -> pd.DataFrame:
 def scan_one_packet_context(
     full_capture_path: Path, one_packet_cohort: pd.DataFrame
 ) -> pd.DataFrame:
+    """Return tuple context while retaining the Phase 2 public interface."""
+    context, _ = scan_one_packet_contexts(full_capture_path, one_packet_cohort)
+    return context
+
+
+def scan_one_packet_contexts(
+    full_capture_path: Path, one_packet_cohort: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Stream one capture and summarize only the cohort's bidirectional tuples.
 
     ``transport_payload_length`` is the decoded payload byte count present in
     the captured record.  It is never inferred from a declared wire length, so
     snaplen truncation cannot silently become a claimed wire-payload size.
+
+    Source context retains plain-SYN observations only for addresses that are
+    endpoints of cohort tuples.  Applicability is decided from the exact
+    matched target packet: only ``SYN=1, ACK=0`` targets receive source facts.
+    Bounded source windows are inclusive intervals around that target time.
     """
     _require_cohort_columns(one_packet_cohort)
     summaries = [_summary_from_row(row) for _, row in one_packet_cohort.iterrows()]
@@ -139,6 +171,11 @@ def scan_one_packet_context(
     for summary in summaries:
         target_index.setdefault((summary.key, summary.target_timestamp), []).append(summary)
         key_index.setdefault(summary.key, []).append(summary)
+    candidate_source_ips = {
+        endpoint.ip for summary in summaries
+        for endpoint in (summary.key.endpoint_a, summary.key.endpoint_b)
+    }
+    source_observations: dict[str, list[_SourceObservation]] = {}
 
     for packet_index, (timestamp, frame, captured_length, original_length) in enumerate(
         iter_capture_packet_records(Path(full_capture_path)), start=1
@@ -146,6 +183,10 @@ def scan_one_packet_context(
         packet = _decode_context_packet(frame, packet_index, timestamp)
         if packet is None:
             continue
+        if _is_plain_syn(packet) and packet.src_ip in candidate_source_ips:
+            source_observations.setdefault(packet.src_ip, []).append(
+                _SourceObservation(packet.timestamp, packet.dst_ip, packet.dst_port)
+            )
         interested = key_index.get(packet.key)
         if not interested:
             continue
@@ -167,7 +208,14 @@ def scan_one_packet_context(
         if ambiguous:
             parts.append("ambiguous target matches for source_flow_id=" + ", ".join(ambiguous))
         raise ValueError("; ".join(parts))
-    return pd.DataFrame([_context_row(summary) for summary in summaries], columns=ONE_PACKET_CONTEXT_COLUMNS)
+    context = pd.DataFrame(
+        [_context_row(summary) for summary in summaries], columns=ONE_PACKET_CONTEXT_COLUMNS
+    )
+    source_context = pd.DataFrame(
+        [_source_context_row(summary, source_observations) for summary in summaries],
+        columns=ONE_PACKET_SOURCE_CONTEXT_COLUMNS,
+    )
+    return context, source_context
 
 
 def _require_cohort_columns(cohort: pd.DataFrame) -> None:
@@ -260,6 +308,58 @@ def _observe_context(summary: _TargetSummary, packet: _Packet) -> None:
         existing = getattr(summary, attribute)
         if existing is None or gap < existing:
             setattr(summary, attribute, gap)
+
+
+def _is_plain_syn(packet: _Packet) -> bool:
+    return (
+        packet.tcp_flags_raw is not None
+        and bool(packet.tcp_flags_raw & dpkt.tcp.TH_SYN)
+        and not bool(packet.tcp_flags_raw & dpkt.tcp.TH_ACK)
+    )
+
+
+def _source_context_row(
+    summary: _TargetSummary,
+    source_observations: dict[str, list[_SourceObservation]],
+) -> dict[str, object]:
+    assert summary.target is not None
+    row: dict[str, object] = {
+        "source_flow_id": summary.source_flow_id,
+        "target_timestamp": summary.target_timestamp,
+        "source_context_applicable": _is_plain_syn(summary.target),
+        "context_source_ip": None,
+    }
+    statistic_columns = [
+        column for column in ONE_PACKET_SOURCE_CONTEXT_COLUMNS
+        if column.startswith(("plain_syn_", "unique_"))
+    ]
+    if not row["source_context_applicable"]:
+        row.update({column: None for column in statistic_columns})
+        return row
+
+    source_ip = summary.target.src_ip
+    row["context_source_ip"] = source_ip
+    observations = source_observations.get(source_ip, [])
+    for name, seconds in _SOURCE_WINDOWS:
+        selected = [
+            event for event in observations
+            if abs(event.timestamp - summary.target_timestamp) <= seconds
+        ]
+        row.update(_source_statistics(selected, suffix=name))
+    row.update(_source_statistics(observations, suffix="24h"))
+    return row
+
+
+def _source_statistics(
+    observations: list[_SourceObservation], *, suffix: str
+) -> dict[str, int]:
+    targets = {(event.dst_ip, event.dst_port) for event in observations}
+    return {
+        f"plain_syn_packet_count_{suffix}": len(observations),
+        f"unique_target_count_{suffix}": len(targets),
+        f"unique_dst_ip_count_{suffix}": len({event.dst_ip for event in observations}),
+        f"unique_dst_port_count_{suffix}": len({event.dst_port for event in observations}),
+    }
 
 
 def _tcp_flags_text(flags: int | None) -> str | None:
