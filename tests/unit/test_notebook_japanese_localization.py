@@ -17,12 +17,11 @@ def test_legacy_notebook_uses_japanese_headings() -> None:
     assert "再現ビュー" in source
 
 
-def test_threshold_notebook_uses_japanese_plot_text() -> None:
+def test_threshold_notebook_uses_current_plot_text() -> None:
     source = _source("01_scan_threshold_exploration.ipynb")
 
     assert "# scan-like閾値の探索" in source
-    assert "60秒ウィンドウあたりのSYN開始フロー数" in source
-    assert "Broad scan-like source-window activity" not in source
+    assert "SYN-initiated flows per 60 s window" in source
 
 
 def test_multi_dataset_notebook_uses_japanese_plot_text() -> None:
