@@ -33,6 +33,48 @@ the final diff for contract compliance and code quality. Record failures and
 deferred checks accurately. Fixture and golden validation are not evidence of a
 successful real-data end-to-end run.
 
+## Agent usage and token budget
+
+Accuracy takes priority over minimizing token usage, but avoid unnecessary
+agent fan-out and repeated repository exploration.
+
+Use subagents selectively when they materially improve implementation
+correctness or review quality.
+
+For substantial implementation tasks:
+
+- Prefer one implementer context for one coherent task or phase.
+- After implementation and focused tests pass, use one fresh reviewer when
+  an independent review would materially reduce risk.
+- The reviewer should inspect the changed behavior for the concerns relevant
+  to the task, including where applicable:
+  - research-contract compliance,
+  - artifact and provenance boundaries,
+  - algorithm and data-processing correctness,
+  - boundary and failure-case semantics,
+  - regression risk.
+- Fix material reviewer findings before reporting completion.
+
+Avoid unnecessary agent fan-out:
+
+- Do not dispatch multiple agents to implement the same task in parallel
+  unless the human explicitly requests comparative implementations.
+- Do not use subagents for trivial documentation-only edits or mechanical
+  changes where an independent context adds little value.
+- Do not make every subagent recursively explore the repository.
+- Each agent should read the minimum authoritative and task-relevant files
+  needed for its role.
+- Reuse an approved design or implementation plan instead of having each
+  agent independently redesign the task.
+
+For large features, prefer a small number of coherent phases over many tiny
+agent tasks. Each phase should have a testable deliverable and a clear
+interface to the next phase.
+
+Token efficiency must not be achieved by skipping tests, provenance checks,
+research-contract checks, or independent review when those checks materially
+affect research correctness.
+
 ## Completion report
 
 Report:
