@@ -17,6 +17,7 @@ from mawi_global_analysis.one_packet_context import (
     ONE_PACKET_COHORT_COLUMNS,
     ONE_PACKET_CONTEXT_COLUMNS,
     ONE_PACKET_SOURCE_CONTEXT_COLUMNS,
+    aggregate_one_packet_context_chunks,
     build_one_packet_cohort_from_run,
     scan_one_packet_contexts,
 )
@@ -83,14 +84,114 @@ def write_one_packet_context_run(
         source_manifest, window_manifest_path, window_manifest,
     )
     _validate_frames(cohort, context, source_context)
+    return _write_context_artifacts(
+        dataset_id, source_run_name, context_run_name, cohort, context, source_context,
+        provenance, root=root,
+    )
+
+
+def run_one_packet_context_chunk_analysis(
+    dataset_id: str,
+    source_run_name: str,
+    chunk_cache_directory: Path,
+    target_chunk_id: str,
+    context_run_name: str,
+    *,
+    root: Path = Path("."),
+) -> Path:
+    """Publish context from validated local DITL chunk observations."""
+    from mawi_global_analysis.one_packet_context_chunks import (
+        enumerate_completed_chunk_metadata,
+        load_completed_chunk_observations,
+    )
+
+    root = Path(root).resolve()
+    source_manifest_path = root / "results" / dataset_id / source_run_name / "run_manifest.json"
+    run = load_run(dataset_id, source_run_name, root=root)
+    cohort = build_one_packet_cohort_from_run(run)
+    metadata = enumerate_completed_chunk_metadata(chunk_cache_directory, cohort)
+    chunks = [load_completed_chunk_observations(chunk_cache_directory, record["chunk_id"], cohort) for record in metadata]
+    context, source_context = aggregate_one_packet_context_chunks(cohort, chunks)
+    return write_one_packet_context_chunk_run(
+        dataset_id, source_run_name, chunks, target_chunk_id, context_run_name,
+        cohort, context, source_context, source_manifest_path, root=root,
+    )
+
+
+def write_one_packet_context_chunk_run(
+    dataset_id: str,
+    source_run_name: str,
+    chunks: list[Any],
+    target_chunk_id: str,
+    context_run_name: str,
+    cohort: pd.DataFrame,
+    context: pd.DataFrame,
+    source_context: pd.DataFrame,
+    source_run_manifest_path: Path,
+    *,
+    root: Path = Path("."),
+) -> Path:
+    """Publish a context run with direct DITL-target-chunk provenance."""
+    source_run_manifest_path = Path(source_run_manifest_path).resolve()
+    source_manifest = _read_json(source_run_manifest_path, "source run manifest")
+    chunks = _reload_chunks_for_final(chunks, cohort)
+    provenance = _validated_ditl_provenance(
+        dataset_id, source_run_name, chunks, target_chunk_id, source_run_manifest_path, source_manifest,
+    )
+    _validate_frames(cohort, context, source_context)
+    return _write_context_artifacts(
+        dataset_id, source_run_name, context_run_name, cohort, context, source_context,
+        provenance, root=Path(root).resolve(),
+    )
+
+
+def _reload_chunks_for_final(chunks: list[Any], cohort: pd.DataFrame) -> list[Any]:
+    """Require disk-backed cache validation before final provenance is published."""
+    from mawi_global_analysis.one_packet_context_chunks import (
+        ChunkCacheConflictError,
+        _load_chunk,
+        cohort_identity,
+    )
+
+    expected_cohort_identity = cohort_identity(cohort)
+    validated: list[Any] = []
+    for chunk in chunks:
+        metadata = getattr(chunk, "metadata", None)
+        artifacts = metadata.get("artifacts") if isinstance(metadata, dict) else None
+        if not isinstance(artifacts, dict):
+            raise ChunkCacheConflictError("chunk metadata has invalid artifacts")
+        paths = []
+        for name in ("target_observations", "source_syn_observations"):
+            record = artifacts.get(name)
+            if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+                raise ChunkCacheConflictError("chunk metadata has invalid artifact record")
+            paths.append(Path(record["path"]))
+        if not all(path.is_absolute() for path in paths) or paths[0].parent != paths[1].parent:
+            raise ChunkCacheConflictError("chunk artifacts do not share a cache directory")
+        validated.append(_load_chunk(paths[0].parent, expected_cohort_identity, require_success=True))
+    return validated
+
+
+def _write_context_artifacts(
+    dataset_id: str,
+    source_run_name: str,
+    context_run_name: str,
+    cohort: pd.DataFrame,
+    context: pd.DataFrame,
+    source_context: pd.DataFrame,
+    provenance: dict[str, Any],
+    *,
+    root: Path,
+) -> Path:
+    """Write final schemas after either legacy or DITL input provenance validates."""
     code_identity = _code_identity()
     run_dir = root / "results" / dataset_id / context_run_name
     manifest_path = run_dir / "context_manifest.json"
     identity = stable_json_hash({
         "dataset_id": dataset_id, "context_run_name": context_run_name,
-        "full_capture_sha256": provenance["full_capture"]["sha256"],
+        "input_mode": provenance["input_mode"],
+        "input_identity": provenance["input_identity"],
         "source_run_manifest_sha256": provenance["source_run"]["run_manifest_sha256"],
-        "window_manifest_sha256": provenance["source_capture_window"]["window_manifest_sha256"],
         "context_code_source_hash": code_identity.get("source_hash"),
     })
     if manifest_path.exists():
@@ -169,10 +270,80 @@ def _validated_provenance(
                 thresholds[key] = strict[key]
     except yaml.YAMLError:
         pass
+    window_hash = sha256_file(window_manifest_path)
     return {
+        "input_mode": "full_capture",
+        "input_identity": stable_json_hash({"full_capture_sha256": full_capture_hash, "window_manifest_sha256": window_hash}),
         "full_capture": {"path": str(full_capture), "sha256": full_capture_hash, "size_bytes": full_capture.stat().st_size},
         "source_run": {"dataset_id": dataset_id, "run_name": source_run_name, "run_manifest_path": str(source_manifest_path), "run_manifest_sha256": sha256_file(source_manifest_path)},
-        "source_capture_window": {"window_start": window_manifest.get("window_start"), "window_end": window_manifest.get("window_end"), "extracted_capture_path": str(extracted), "extracted_capture_sha256": extracted_hash, "window_manifest_path": str(window_manifest_path), "window_manifest_sha256": sha256_file(window_manifest_path)},
+        "source_capture_window": {"window_start": window_manifest.get("window_start"), "window_end": window_manifest.get("window_end"), "extracted_capture_path": str(extracted), "extracted_capture_sha256": extracted_hash, "window_manifest_path": str(window_manifest_path), "window_manifest_sha256": window_hash},
+        "scan_configuration": {"path": config["path"], "hash": config["hash"], "effective_strict_thresholds": thresholds},
+    }
+
+
+def _validated_ditl_provenance(
+    dataset_id: str,
+    source_run_name: str,
+    chunks: list[Any],
+    target_chunk_id: str,
+    source_manifest_path: Path,
+    source_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    if source_manifest.get("status") != "success" or source_manifest.get("dataset_id") != dataset_id:
+        raise ValueError("source run manifest is not a successful matching dataset run")
+    source_input = source_manifest.get("input")
+    if not isinstance(source_input, dict) or not isinstance(source_input.get("path"), str) or not isinstance(source_input.get("sha256"), str):
+        raise ValueError("source run manifest has invalid input provenance")
+    config = source_manifest.get("config")
+    if not isinstance(config, dict) or not isinstance(config.get("path"), str) or not isinstance(config.get("hash"), str):
+        raise ValueError("source run manifest has invalid scan configuration provenance")
+    if not chunks:
+        raise ValueError("DITL context run requires at least one completed chunk")
+    records: list[dict[str, Any]] = []
+    for chunk in chunks:
+        metadata = getattr(chunk, "metadata", None)
+        if not isinstance(metadata, dict) or metadata.get("status") != "success":
+            raise ValueError("DITL context run requires validated successful chunk metadata")
+        required = ("chunk_id", "cohort_identity", "observation_code_identity", "source", "artifacts")
+        if any(key not in metadata for key in required) or not isinstance(metadata["source"], dict):
+            raise ValueError("DITL chunk metadata is incomplete")
+        source = metadata["source"]
+        if not isinstance(source.get("sha256"), str) or not isinstance(source.get("filename"), str) or not isinstance(source.get("size_bytes"), int):
+            raise ValueError("DITL chunk source provenance is incomplete")
+        record = {
+            "chunk_id": metadata["chunk_id"], "cohort_identity": metadata["cohort_identity"],
+            "observation_code_identity": metadata["observation_code_identity"], "source": source,
+            "first_observed_packet_timestamp": metadata.get("first_observed_packet_timestamp"),
+            "last_observed_packet_timestamp": metadata.get("last_observed_packet_timestamp"),
+            "target_observation_row_count": metadata.get("target_observation_row_count"),
+            "source_syn_observation_row_count": metadata.get("source_syn_observation_row_count"),
+            "artifacts": metadata["artifacts"],
+        }
+        record["identity"] = stable_json_hash(record)
+        records.append(record)
+    if len({record["chunk_id"] for record in records}) != len(records):
+        raise ValueError("DITL chunk metadata contains duplicate chunk_id values")
+    records.sort(key=lambda record: record["identity"])
+    target = next((record for record in records if record["chunk_id"] == target_chunk_id), None)
+    if target is None:
+        raise ValueError("target DITL chunk is not among completed chunks")
+    if source_input["sha256"] != target["source"]["sha256"]:
+        raise ValueError("source run input checksum does not match target DITL chunk checksum")
+    thresholds: dict[str, object] = {}
+    try:
+        scan = yaml.safe_load(config.get("text", "")) or {}
+        strict = scan.get("scan", {}).get("strict", {})
+        for key in ("min_pattern_count", "min_unique_targets"):
+            if key in strict:
+                thresholds[key] = strict[key]
+    except yaml.YAMLError:
+        pass
+    return {
+        "input_mode": "ditl_chunks",
+        "input_identity": stable_json_hash({"chunk_identities": [record["identity"] for record in records]}),
+        "ditl_chunks": records,
+        "source_target_chunk_id": target_chunk_id,
+        "source_run": {"dataset_id": dataset_id, "run_name": source_run_name, "run_manifest_path": str(source_manifest_path), "run_manifest_sha256": sha256_file(source_manifest_path)},
         "scan_configuration": {"path": config["path"], "hash": config["hash"], "effective_strict_thresholds": thresholds},
     }
 

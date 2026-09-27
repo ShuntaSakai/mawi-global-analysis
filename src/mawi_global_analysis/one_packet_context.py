@@ -10,6 +10,7 @@ from __future__ import annotations
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any
 
 import dpkt
@@ -163,6 +164,55 @@ def scan_one_packet_contexts(
     Bounded source windows are inclusive intervals around that target time.
     """
     _require_cohort_columns(one_packet_cohort)
+    target_keys = {
+        FlowKey.from_packet(str(row.src_ip), int(row.src_port), str(row.dst_ip), int(row.dst_port), int(row.protocol))
+        for row in one_packet_cohort.itertuples(index=False)
+    }
+    candidate_source_ips = {endpoint.ip for key in target_keys for endpoint in (key.endpoint_a, key.endpoint_b)}
+    target_rows: list[dict[str, object]] = []
+    source_rows: list[dict[str, object]] = []
+    for packet_index, (timestamp, frame, captured_length, original_length) in enumerate(
+        iter_capture_packet_records(Path(full_capture_path)), start=1
+    ):
+        packet = _decode_context_packet(frame, packet_index, timestamp)
+        if packet is None:
+            continue
+        if _is_plain_syn(packet) and packet.src_ip in candidate_source_ips:
+            source_rows.append({"timestamp": packet.timestamp, "src_ip": packet.src_ip, "dst_ip": packet.dst_ip, "dst_port": packet.dst_port})
+        if packet.key in target_keys:
+            target_rows.append({
+                "timestamp": packet.timestamp, "src_ip": packet.src_ip, "src_port": packet.src_port,
+                "dst_ip": packet.dst_ip, "dst_port": packet.dst_port, "protocol": packet.key.protocol,
+                "captured_frame_length": captured_length, "original_frame_length": original_length,
+                "ip_total_length": packet.ip_total_length, "transport_payload_length": packet.transport_payload_length,
+                "tcp_flags_raw": packet.tcp_flags_raw,
+            })
+    return aggregate_one_packet_context_observations(
+        one_packet_cohort, pd.DataFrame(target_rows), pd.DataFrame(source_rows)
+    )
+
+
+def aggregate_one_packet_context_chunks(
+    one_packet_cohort: pd.DataFrame, chunks: Iterable[Any]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Aggregate validated chunk observations without relying on chunk order."""
+    chunk_list = list(chunks)
+    target_frames = [chunk.target_packets for chunk in chunk_list]
+    source_frames = [chunk.source_syn_packets for chunk in chunk_list]
+    return aggregate_one_packet_context_observations(
+        one_packet_cohort,
+        pd.concat(target_frames, ignore_index=True) if target_frames else pd.DataFrame(),
+        pd.concat(source_frames, ignore_index=True) if source_frames else pd.DataFrame(),
+    )
+
+
+def aggregate_one_packet_context_observations(
+    one_packet_cohort: pd.DataFrame,
+    target_observations: pd.DataFrame,
+    source_syn_observations: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute public context tables from timestamped, observational rows only."""
+    _require_cohort_columns(one_packet_cohort)
     summaries = [_summary_from_row(row) for _, row in one_packet_cohort.iterrows()]
     if len({summary.source_flow_id for summary in summaries}) != len(summaries):
         raise ValueError("one-packet cohort contains duplicate source_flow_id values")
@@ -171,33 +221,20 @@ def scan_one_packet_contexts(
     for summary in summaries:
         target_index.setdefault((summary.key, summary.target_timestamp), []).append(summary)
         key_index.setdefault(summary.key, []).append(summary)
-    candidate_source_ips = {
-        endpoint.ip for summary in summaries
-        for endpoint in (summary.key.endpoint_a, summary.key.endpoint_b)
-    }
-    source_observations: dict[str, list[_SourceObservation]] = {}
-
-    for packet_index, (timestamp, frame, captured_length, original_length) in enumerate(
-        iter_capture_packet_records(Path(full_capture_path)), start=1
-    ):
-        packet = _decode_context_packet(frame, packet_index, timestamp)
-        if packet is None:
-            continue
-        if _is_plain_syn(packet) and packet.src_ip in candidate_source_ips:
-            source_observations.setdefault(packet.src_ip, []).append(
-                _SourceObservation(packet.timestamp, packet.dst_ip, packet.dst_port)
-            )
-        interested = key_index.get(packet.key)
-        if not interested:
-            continue
-        for summary in interested:
+    for row in _timestamp_ordered_records(target_observations):
+        packet = _packet_from_observation(row)
+        for summary in key_index.get(packet.key, []):
             _observe_context(summary, packet)
-        for summary in target_index.get((packet.key, timestamp), []):
+        for summary in target_index.get((packet.key, packet.timestamp), []):
             summary.target_match_count += 1
             summary.target = packet
-            summary.captured_frame_length = captured_length
-            summary.original_frame_length = original_length
-
+            summary.captured_frame_length = int(row["captured_frame_length"])
+            summary.original_frame_length = int(row["original_frame_length"])
+    source_observations: dict[str, list[_SourceObservation]] = {}
+    for row in _timestamp_ordered_records(source_syn_observations):
+        source_observations.setdefault(str(row["src_ip"]), []).append(
+            _SourceObservation(float(row["timestamp"]), str(row["dst_ip"]), int(row["dst_port"]))
+        )
     invalid = [summary for summary in summaries if summary.target_match_count != 1]
     if invalid:
         missing = [str(summary.source_flow_id) for summary in invalid if summary.target_match_count == 0]
@@ -208,14 +245,30 @@ def scan_one_packet_contexts(
         if ambiguous:
             parts.append("ambiguous target matches for source_flow_id=" + ", ".join(ambiguous))
         raise ValueError("; ".join(parts))
-    context = pd.DataFrame(
-        [_context_row(summary) for summary in summaries], columns=ONE_PACKET_CONTEXT_COLUMNS
-    )
-    source_context = pd.DataFrame(
-        [_source_context_row(summary, source_observations) for summary in summaries],
-        columns=ONE_PACKET_SOURCE_CONTEXT_COLUMNS,
-    )
+    context = pd.DataFrame([_context_row(summary) for summary in summaries], columns=ONE_PACKET_CONTEXT_COLUMNS)
+    source_context = pd.DataFrame([_source_context_row(summary, source_observations) for summary in summaries], columns=ONE_PACKET_SOURCE_CONTEXT_COLUMNS)
     return context, source_context
+
+
+def _timestamp_ordered_records(frame: pd.DataFrame) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    if "timestamp" not in frame.columns:
+        raise ValueError("observation frame missing timestamp")
+    return frame.sort_values(list(frame.columns), kind="stable", na_position="last").to_dict("records")
+
+
+def _packet_from_observation(row: dict[str, object]) -> _Packet:
+    raw_flags = row["tcp_flags_raw"]
+    flags = None if pd.isna(raw_flags) else int(raw_flags)
+    src_ip, dst_ip = str(row["src_ip"]), str(row["dst_ip"])
+    src_port, dst_port, protocol = int(row["src_port"]), int(row["dst_port"]), int(row["protocol"])
+    return _Packet(
+        timestamp=float(row["timestamp"]), key=FlowKey.from_packet(src_ip, src_port, dst_ip, dst_port, protocol),
+        src_ip=src_ip, src_port=src_port, dst_ip=dst_ip, dst_port=dst_port,
+        ip_total_length=int(row["ip_total_length"]), transport_payload_length=int(row["transport_payload_length"]),
+        tcp_flags_raw=flags,
+    )
 
 
 def _require_cohort_columns(cohort: pd.DataFrame) -> None:

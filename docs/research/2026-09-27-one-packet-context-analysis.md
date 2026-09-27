@@ -23,3 +23,26 @@ streamingでstandard PCAP subcaptureへ抽出し、checksumを含む
 抽出し、対象flowに関係するpacketだけを24時間DITLからstreaming探索する。cohort/context
 CSV、reverse context、same-5tuple scanner、長期統計、MAC/TTL/fragmentation解析、
 notebookはPhase 1の対象外である。
+
+## Phase 5A: DITL multi-chunk local processing
+
+DITLの一日は複数の15分capture chunkとして扱う。14:00–14:15 chunkからsource runと
+one-packet cohortを確定し、各chunkはraw PCAPをstreamingして、対象5-tuple packet事実と
+cohort tuple endpoint由来candidate sourceのplain-SYN事実だけをdurable observation cacheへ
+保存する。最終contextはraw capture群を結合せず、cacheされたtimestamp付き観測を時刻に基づき
+集約する。
+
+```text
+per-chunk raw acquisition
+    ↓
+durable relevant-observation extraction
+    ↓
+validated successful checkpoint
+    ↓
+raw chunk may be deleted
+```
+
+ここでraw deletionは実行・storage policyであり、Phase 5Aは削除を実装しない。各完了cacheは
+source URL（利用可能な場合）、filename、SHA-256、size、実測first/last timestamp、artifact
+checksumを残すため、raw captureが後に存在しなくても再現可能なcontext集約に使用できる。HTTP取得と
+automatic deletionはPhase 5Bの範囲である。

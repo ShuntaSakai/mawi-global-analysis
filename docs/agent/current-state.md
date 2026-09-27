@@ -41,6 +41,15 @@ provenance-aware context manifests, artifacts, and loaders. The follow-up
 Notebook `05_one_packet_context.ipynb` presents those artifacts descriptively;
 it does not parse packet captures or establish scientific conclusions.
 
+Phase 5A additionally supports local DITL multi-chunk one-packet context
+processing: each raw chunk can be streamed into a validated processed-data
+cache of only target-tuple and relevant plain-SYN observations. Validated cache
+artifacts are reusable without the raw capture and aggregate deterministically
+across chunk boundaries and arbitrary processing order. Final context manifests
+can record `input_mode: ditl_chunks` and direct 14:00 target-chunk source-run
+provenance while retaining legacy full-capture context runs. Network retrieval
+and automatic raw-capture deletion are not implemented.
+
 The primary notebooks currently present are legacy reproduction, scan-threshold
 exploration, several main prefix-comparison variants, prefix deep-dive,
 multi-dataset validation, and society-presentation figures.
