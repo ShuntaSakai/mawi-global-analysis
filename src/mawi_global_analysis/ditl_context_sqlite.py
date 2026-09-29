@@ -46,9 +46,10 @@ def require_aggregation_disk_space(directory: Path, metadata: list[dict]) -> int
     return required
 
 class SQLiteContextAggregator:
- def __init__(self,path:Path,cohort:pd.DataFrame,*,batch_size:int=10_000,identity:dict|None=None)->None:
+ def __init__(self,path:Path,cohort:pd.DataFrame,*,batch_size:int=10_000,active_state_limit:int=100_000,identity:dict|None=None)->None:
   self.path,self.batch_size=Path(path),batch_size; self.checkpoint_path=self.path.with_suffix(".checkpoint.json")
   self.identity={"schema_version":SQLITE_SCHEMA_VERSION,"aggregation_code_identity":aggregation_code_identity(),**(identity or {})}
+  self.active_state_limit=active_state_limit; self.spill_used=False
   self.ingested_chunks: list[str] = []
   if any(path.exists() for path in self._state_paths()):
    if self._resume_if_compatible(): return
@@ -148,6 +149,7 @@ class SQLiteContextAggregator:
     if src!=current: current=src;ev=iter(c.execute("SELECT ts,dst,dp FROM syn WHERE src=? ORDER BY ts",(src,)));next_ev=next(ev,None);active.clear();pair.clear();ip.clear();port.clear()
     while next_ev and next_ev[0]<=ts+w:
      x=next_ev;active.append(x);pair[(x[1],x[2])]+=1;ip[x[1]]+=1;port[x[2]]+=1;next_ev=next(ev,None)
+     if len(active)>self.active_state_limit: self.spill_used=True
     while active and active[0][0]<ts-w:
      x=active.popleft();pair[(x[1],x[2])]-=1;ip[x[1]]-=1;port[x[2]]-=1
      if not pair[(x[1],x[2])]:del pair[(x[1],x[2])]

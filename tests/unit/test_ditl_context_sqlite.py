@@ -89,3 +89,19 @@ def test_compute_rebuilds_partial_derived_tables_without_reingestion(tmp_path):
     resumed.compute()
     assert len(list(resumed.iter_context_rows())) == 1
     resumed.close(delete=True)
+
+
+def test_prolific_source_uses_spill_and_preserves_inclusive_windows(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    syns = pd.DataFrame([
+        {"timestamp": timestamp, "src_ip": "198.51.100.1", "dst_ip": f"192.0.2.{index + 2}", "dst_port": 80 + index}
+        for index, timestamp in enumerate((-3500.0, -800.0, -200.0, 400.0, 1000.0, 3700.0))
+    ])
+    ordinary = SQLiteContextAggregator(tmp_path / "ordinary.sqlite3", _cohort(), active_state_limit=100)
+    ordinary.ingest_frames(pd.DataFrame([_target(100.0)]), syns); ordinary.compute()
+    expected = list(ordinary.iter_source_context_rows())
+    spilled = SQLiteContextAggregator(tmp_path / "spilled.sqlite3", _cohort(), active_state_limit=2)
+    spilled.ingest_frames(pd.DataFrame([_target(100.0)]), syns); spilled.compute()
+    assert spilled.spill_used is True
+    assert list(spilled.iter_source_context_rows()) == expected
