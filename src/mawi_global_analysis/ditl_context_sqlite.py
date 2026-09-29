@@ -50,6 +50,8 @@ class SQLiteContextAggregator:
   self.path,self.batch_size=Path(path),batch_size; self.checkpoint_path=self.path.with_suffix(".checkpoint.json")
   self.identity={"schema_version":SQLITE_SCHEMA_VERSION,"aggregation_code_identity":aggregation_code_identity(),**(identity or {})}
   self.active_state_limit=active_state_limit; self.spill_batch_size=spill_batch_size; self.spill_used=False; self.spill_count=0; self.max_python_active_events=0; self.max_python_pair_entries=0; self.max_python_ip_entries=0; self.max_python_port_entries=0; self.max_spill_batch_rows=0
+  if batch_size <= 0 or active_state_limit <= 0 or spill_batch_size <= 0: raise ValueError("batch and spill limits must be positive")
+  self.spill_count_by_window={300:0,900:0,3600:0}; self.post_spill_python_state_sizes=[]
   self.ingested_chunks: list[str] = []
   if any(path.exists() for path in self._state_paths()):
    if self._resume_if_compatible(): return
@@ -156,7 +158,7 @@ class SQLiteContextAggregator:
     while next_ev and next_ev[0]<=ts+w:
      x=next_ev
      if not spilled and len(active) >= self.active_state_limit:
-      self._migrate_window_to_spill(w,src,active,pair,ip,port,spill_state); active.clear();pair.clear();ip.clear();port.clear();spilled=True
+      self._migrate_window_to_spill(w,src,active,pair,ip,port,spill_state); active.clear();pair.clear();ip.clear();port.clear();self.post_spill_python_state_sizes.append((len(active),len(pair),len(ip),len(port)));spilled=True
      if spilled: self._spill_add(w,src,x,spill_state)
      else: active.append(x);pair[(x[1],x[2])]+=1;ip[x[1]]+=1;port[x[2]]+=1;self._observe_python_state(active,pair,ip,port)
      next_ev=next(ev,None)
@@ -182,9 +184,24 @@ class SQLiteContextAggregator:
  def _migrate_window_to_spill(self,w,src,active,pair,ip,port,state) -> None:
   self.connection.execute("SAVEPOINT spill_migration")
   try:
-   for event in active:self._spill_add(w,src,event,state)
-   if state["packets"] != len(active):raise ValueError("spill migration verification failed")
-   self.connection.execute("RELEASE spill_migration");self.spill_used=True;self.spill_count+=1
+   events=list(active)
+   for offset in range(0,len(events),self.spill_batch_size):
+    batch=events[offset:offset+self.spill_batch_size];self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
+    rows=[]
+    for event in batch: state["seq"]+=1;rows.append((w,src,state["seq"],*event))
+    self.connection.executemany("INSERT INTO spill_event VALUES(?,?,?,?,?,?)",rows)
+   for table,fields,values,count in (("spill_pair","dst,dp",pair.items(),"pairs"),("spill_ip","dst",ip.items(),"ips"),("spill_port","dp",port.items(),"ports")):
+    material=list(values)
+    for offset in range(0,len(material),self.spill_batch_size):
+     batch=material[offset:offset+self.spill_batch_size];self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
+     rows=[]
+     for key,n in batch:
+      key=(key,) if not isinstance(key,tuple) else key;rows.append((w,src,*key,n))
+     self.connection.executemany(f"INSERT INTO {table}(window,src,{fields},n) VALUES(?,?,{','.join('?' for _ in range(len(rows[0])-2))})",rows)
+    state[count]=len(material)
+   state["packets"]=len(events);state["oldest"]=events[0][0] if events else None
+   if (state["packets"],state["pairs"],state["ips"],state["ports"]) != (len(active),len(pair),len(ip),len(port)):raise ValueError("spill migration verification failed")
+   self.connection.execute("RELEASE spill_migration");self.spill_used=True;self.spill_count+=1;self.spill_count_by_window[w]+=1
   except BaseException:self.connection.execute("ROLLBACK TO spill_migration");self.connection.execute("RELEASE spill_migration");raise
  def _spill_expire(self,w,src,cutoff,state) -> None:
   while state["oldest"] is not None and state["oldest"] < cutoff:
