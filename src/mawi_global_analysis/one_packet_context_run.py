@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import csv
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,79 @@ from mawi_global_analysis.pipeline import _code_identity
 
 class ContextRunConflictError(ValueError):
     """Raised when an existing context run cannot safely be reused."""
+
+
+def write_one_packet_context_chunk_run_streaming(
+    dataset_id: str,
+    source_run_name: str,
+    metadata: list[dict[str, Any]],
+    target_chunk_id: str,
+    context_run_name: str,
+    cohort: pd.DataFrame,
+    aggregator: Any,
+    source_run_manifest_path: Path,
+    *,
+    root: Path = Path("."),
+) -> Path:
+    """Publish SQLite cursor output without materialising final context frames."""
+    from types import SimpleNamespace
+
+    root = Path(root).resolve()
+    source_run_manifest_path = Path(source_run_manifest_path).resolve()
+    provenance = _validated_ditl_provenance(
+        dataset_id, source_run_name, [SimpleNamespace(metadata=item) for item in metadata],
+        target_chunk_id, source_run_manifest_path, _read_json(source_run_manifest_path, "source run manifest"),
+    )
+    run_dir = root / "results" / dataset_id / context_run_name
+    manifest_path = run_dir / "context_manifest.json"
+    identity = stable_json_hash({
+        "dataset_id": dataset_id, "context_run_name": context_run_name,
+        "input_mode": provenance["input_mode"], "input_identity": provenance["input_identity"],
+        "source_run_manifest_sha256": provenance["source_run"]["run_manifest_sha256"],
+        "context_code_source_hash": _code_identity().get("source_hash"),
+    })
+    if manifest_path.exists():
+        raise ContextRunConflictError("existing context run prevents streaming publication")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cohort_path = run_dir / "one_packet_cohort.csv"
+        _write_dataframe_atomically(cohort, cohort_path)
+        context_path = run_dir / "one_packet_context.csv"
+        source_path = run_dir / "one_packet_source_context.csv"
+        context_rows = _write_rows_atomically(context_path, ONE_PACKET_CONTEXT_COLUMNS, aggregator.iter_context_rows())
+        source_rows = _write_rows_atomically(source_path, ONE_PACKET_SOURCE_CONTEXT_COLUMNS, aggregator.iter_source_context_rows())
+        if context_rows != len(cohort) or source_rows != len(cohort):
+            raise ValueError("streaming context rows do not preserve cohort linkage")
+        artifacts = {
+            "one_packet_cohort": _stream_artifact(cohort_path, len(cohort)),
+            "one_packet_context": _stream_artifact(context_path, context_rows),
+            "one_packet_source_context": _stream_artifact(source_path, source_rows),
+        }
+        write_json_atomically(manifest_path, {"status": "success", "analysis_name": "one_packet_context", "dataset_id": dataset_id, "context_run_name": context_run_name, "identity": identity, **provenance, "code_identity": _code_identity(), "artifacts": artifacts})
+    except BaseException as error:
+        if not manifest_path.exists(): write_json_atomically(manifest_path, {"status": "failed", "analysis_name": "one_packet_context", "dataset_id": dataset_id, "context_run_name": context_run_name, "identity": identity, "error": {"type": type(error).__name__, "message": str(error)}})
+        raise
+    return run_dir
+
+
+def _write_rows_atomically(path: Path, columns: tuple[str, ...], rows: Any) -> int:
+    temporary: Path | None = None
+    count = 0
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as output:
+            temporary = Path(output.name); writer = csv.DictWriter(output, fieldnames=columns); writer.writeheader()
+            for row in rows:
+                if tuple(row) != columns: raise ValueError("streaming context schema mismatch")
+                writer.writerow(row); count += 1
+            output.flush(); os.fsync(output.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None and temporary.exists(): temporary.unlink()
+    return count
+
+
+def _stream_artifact(path: Path, row_count: int) -> dict[str, object]:
+    return {"path": str(path), "sha256": sha256_file(path), "row_count": row_count}
 
 
 def run_one_packet_context_analysis(

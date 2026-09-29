@@ -10,13 +10,14 @@ from mawi_global_analysis.ditl_downloader import (
     delete_owned_raw_after_checkpoint, download_chunk, ownership_path, raw_path_for, validate_owned_raw,
 )
 from mawi_global_analysis.hashing import sha256_file
-from mawi_global_analysis.io import load_one_packet_context, load_run
-from mawi_global_analysis.one_packet_context import aggregate_one_packet_context_chunks, build_one_packet_cohort_from_run
+from mawi_global_analysis.io import load_run
+from mawi_global_analysis.one_packet_context import build_one_packet_cohort_from_run
 from mawi_global_analysis.one_packet_context_chunks import (
     ChunkCacheConflictError, cohort_identity, extract_one_packet_chunk_observations,
     load_completed_chunk_observations,
 )
-from mawi_global_analysis.one_packet_context_run import write_one_packet_context_chunk_run
+from mawi_global_analysis.one_packet_context_run import write_one_packet_context_chunk_run_streaming
+from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator, require_aggregation_disk_space
 
 
 LOGGER = logging.getLogger(__name__)
@@ -106,16 +107,27 @@ def run_ditl_one_packet_context(
     # A list from the fixed expected plan makes a missing cache impossible to hide.
     if len(validated_by_id) != 96:
         raise ValueError("all 96 expected DITL chunk caches are required")
-    # TODO: replace the legacy all-chunk aggregation below with the SQLite
-    # streaming publication path.  Metadata remains deliberately lightweight.
-    validated = [load_completed_chunk_observations(cache_root, chunk_id, cohort) for chunk_id in chunk_ids]
-    context, source_context = aggregate_one_packet_context_chunks(cohort, validated)
-    run_dir = write_one_packet_context_chunk_run(
-        dataset_id, source_run_name, validated, target_chunk_id, context_run_name, cohort,
-        context, source_context, source_manifest, root=root,
-    )
-    # Final output must be reloadable independently of every raw capture.
-    load_one_packet_context(dataset_id, context_run_name, root=root)
+    LOGGER.info("starting final aggregation")
+    spool_root.mkdir(parents=True, exist_ok=True)
+    required_bytes = require_aggregation_disk_space(spool_root, [validated_by_id[chunk_id] for chunk_id in chunk_ids])
+    LOGGER.info("SQLite disk preflight reserved %d bytes", required_bytes)
+    database_path = spool_root / ".aggregation.sqlite3"
+    aggregator = SQLiteContextAggregator(database_path, cohort, identity={"cohort_identity": cohort_identity(cohort), "chunk_ids": chunk_ids})
+    try:
+        for index, chunk_id in enumerate(chunk_ids, start=1):
+            LOGGER.info("ingesting chunk %d/%d: %s", index, len(chunk_ids), chunk_id)
+            chunk = load_completed_chunk_observations(cache_root, chunk_id, cohort)
+            aggregator.ingest_frames(chunk.target_packets, chunk.source_syn_packets)
+            del chunk
+        LOGGER.info("building indexes and computing tuple/source context")
+        aggregator.compute()
+        LOGGER.info("writing final artifacts")
+        run_dir = write_one_packet_context_chunk_run_streaming(
+            dataset_id, source_run_name, [validated_by_id[chunk_id] for chunk_id in chunk_ids],
+            target_chunk_id, context_run_name, cohort, aggregator, source_manifest, root=root,
+        )
+    finally:
+        aggregator.close(delete=False)
     if target_path.exists() and target_path.parent == spool_root.resolve() and ownership_path(target_path).exists():
         # An owned target within this spool is deleted only after final loading;
         # a corrupt ownership/cache proof is a failure, not a reason to hide it.

@@ -1,5 +1,7 @@
 """Disk-backed, bounded-batch DITL context aggregation."""
 from __future__ import annotations
+import json
+import shutil
 import sqlite3
 from collections import Counter, deque
 from collections.abc import Iterable, Iterator
@@ -7,10 +9,36 @@ from pathlib import Path
 import pandas as pd
 from mawi_global_analysis.flow import FlowKey
 from mawi_global_analysis.one_packet_context import ONE_PACKET_CONTEXT_COLUMNS, ONE_PACKET_SOURCE_CONTEXT_COLUMNS, _tcp_flags_text
+from mawi_global_analysis.hashing import stable_json_hash
+
+
+SQLITE_SCHEMA_VERSION = "ditl-context-sqlite-v1"
+MINIMUM_FREE_BYTES = 2 * 1024**3
+
+
+class InsufficientAggregationDiskSpace(ValueError):
+    """Raised before ingestion when controlled spool space is insufficient."""
+
+
+def require_aggregation_disk_space(directory: Path, metadata: list[dict]) -> int:
+    """Reserve a conservative, metadata-derived SQLite and staging budget."""
+    observed = sum(
+        Path(record["path"]).stat().st_size
+        for item in metadata for record in item["artifacts"].values()
+    )
+    required = max(MINIMUM_FREE_BYTES, observed * 4)
+    available = shutil.disk_usage(directory).free
+    if available < required:
+        raise InsufficientAggregationDiskSpace(
+            f"aggregation requires at least {required} free bytes; only {available} available"
+        )
+    return required
 
 class SQLiteContextAggregator:
- def __init__(self,path:Path,cohort:pd.DataFrame,*,batch_size:int=10_000)->None:
-  self.path,self.batch_size=Path(path),batch_size; self.connection=sqlite3.connect(self.path)
+ def __init__(self,path:Path,cohort:pd.DataFrame,*,batch_size:int=10_000,identity:dict|None=None)->None:
+  self.path,self.batch_size=Path(path),batch_size; self.checkpoint_path=self.path.with_suffix(".checkpoint.json")
+  self.identity={"schema_version":SQLITE_SCHEMA_VERSION,**(identity or {})}
+  self.connection=sqlite3.connect(self.path)
   c=self.connection; c.execute("PRAGMA cache_size=-65536"); c.execute("PRAGMA temp_store=FILE")
   c.execute("CREATE TABLE cohort(id INTEGER PRIMARY KEY,source_flow_id,ts REAL,a TEXT,ap INTEGER,b TEXT,bp INTEGER,p INTEGER)")
   c.execute("CREATE TABLE o(ts REAL,a TEXT,ap INTEGER,b TEXT,bp INTEGER,p INTEGER,src TEXT,sp INTEGER,dst TEXT,dp INTEGER,cap INTEGER,orig INTEGER,iplen INTEGER,payload INTEGER,flags INTEGER)")
@@ -19,6 +47,9 @@ class SQLiteContextAggregator:
    for i,r in enumerate(cohort.itertuples(index=False)):
     k=FlowKey.from_packet(str(r.src_ip),int(r.src_port),str(r.dst_ip),int(r.dst_port),int(r.protocol)); yield i,r.source_flow_id,float(r.target_timestamp),k.endpoint_a.ip,k.endpoint_a.port,k.endpoint_b.ip,k.endpoint_b.port,k.protocol
   self._insert("INSERT INTO cohort VALUES(?,?,?,?,?,?,?,?)",rows()); c.commit()
+  self._write_checkpoint([])
+ def _write_checkpoint(self, ingested:list[str])->None:
+  self.checkpoint_path.write_text(json.dumps({"identity":self.identity,"ingested":ingested},sort_keys=True),encoding="utf-8")
  def _insert(self,sql:str,rows:Iterable[tuple])->None:
   batch=[]
   for r in rows:

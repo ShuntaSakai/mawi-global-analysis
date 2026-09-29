@@ -46,14 +46,20 @@ def test_orchestrator_processes_target_checkpoint_before_other_slots(monkeypatch
         (directory / "chunk_metadata.json").write_text("{}")
     def load_cache(root, chunk_id, cohort):
         seen.append(chunk_id)
-        return SimpleNamespace(metadata={"source": {"sha256": digest, "size_bytes": 6}, "status": "success", "artifacts": {}})
+        return SimpleNamespace(metadata={"source": {"sha256": digest, "size_bytes": 6}, "status": "success", "artifacts": {}}, target_packets=None, source_syn_packets=None)
     monkeypatch.setattr(orchestration, "load_completed_chunk_observations", load_cache)
-    monkeypatch.setattr(orchestration, "aggregate_one_packet_context_chunks", lambda *a: (object(), object()))
-    monkeypatch.setattr(orchestration, "write_one_packet_context_chunk_run", lambda *a, **k: tmp_path / "result")
-    monkeypatch.setattr(orchestration, "load_one_packet_context", lambda *a, **k: object())
+    ingested: list[str] = []
+    class FakeAggregator:
+        def __init__(self, *args, **kwargs): pass
+        def ingest_frames(self, target, source): ingested.append("chunk")
+        def compute(self): pass
+        def close(self, **kwargs): pass
+    monkeypatch.setattr(orchestration, "SQLiteContextAggregator", FakeAggregator)
+    monkeypatch.setattr(orchestration, "write_one_packet_context_chunk_run_streaming", lambda *a, **k: tmp_path / "result")
 
     orchestration.run_ditl_one_packet_context("dataset", "source", "20260408", "202604081400", target,
         "https://example.test/{chunk_id}.pcap.gz", "context", root=tmp_path)
 
     assert seen[0] == "202604081400"
-    assert seen[1:] == [chunk_id for chunk_id in all_chunks if chunk_id != "202604081400"]
+    assert seen[1:96] == [chunk_id for chunk_id in all_chunks if chunk_id != "202604081400"]
+    assert len(ingested) == 96
