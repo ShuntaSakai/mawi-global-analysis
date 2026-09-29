@@ -46,10 +46,10 @@ def require_aggregation_disk_space(directory: Path, metadata: list[dict]) -> int
     return required
 
 class SQLiteContextAggregator:
- def __init__(self,path:Path,cohort:pd.DataFrame,*,batch_size:int=10_000,active_state_limit:int=100_000,identity:dict|None=None)->None:
+ def __init__(self,path:Path,cohort:pd.DataFrame,*,batch_size:int=10_000,active_state_limit:int=100_000,spill_batch_size:int=1_000,identity:dict|None=None)->None:
   self.path,self.batch_size=Path(path),batch_size; self.checkpoint_path=self.path.with_suffix(".checkpoint.json")
   self.identity={"schema_version":SQLITE_SCHEMA_VERSION,"aggregation_code_identity":aggregation_code_identity(),**(identity or {})}
-  self.active_state_limit=active_state_limit; self.spill_used=False
+  self.active_state_limit=active_state_limit; self.spill_batch_size=spill_batch_size; self.spill_used=False; self.spill_count=0; self.max_python_active_events=0; self.max_python_pair_entries=0; self.max_python_ip_entries=0; self.max_python_port_entries=0; self.max_spill_batch_rows=0
   self.ingested_chunks: list[str] = []
   if any(path.exists() for path in self._state_paths()):
    if self._resume_if_compatible(): return
@@ -127,7 +127,7 @@ class SQLiteContextAggregator:
   # Only raw observations and ingestion_ledger are restart-durable.  Derived
   # tables are discarded before every attempt, so a SIGKILL in compute cannot
   # make an otherwise complete ingestion database unusable.
-  for table in ("s","w5","w15","w1","t","m"):
+  for table in ("s","w5","w15","w1","t","m","spill_event","spill_pair","spill_ip","spill_port"):
    c.execute(f"DROP TABLE IF EXISTS {table}")
   for index in ("ok","sk","mk"):
    c.execute(f"DROP INDEX IF EXISTS {index}")
@@ -141,24 +141,62 @@ class SQLiteContextAggregator:
   self._source();c.commit()
  def _source(self)->None:
   c=self.connection
+  # Spill tables are derived compute state.  They are dropped at the start of
+  # compute with every other derived table, never persisted as cache input.
+  c.execute("CREATE TABLE spill_event(window INTEGER,src TEXT,seq INTEGER,ts REAL,dst TEXT,dp INTEGER,PRIMARY KEY(window,src,seq))")
+  c.execute("CREATE TABLE spill_pair(window INTEGER,src TEXT,dst TEXT,dp INTEGER,n INTEGER,PRIMARY KEY(window,src,dst,dp))")
+  c.execute("CREATE TABLE spill_ip(window INTEGER,src TEXT,dst TEXT,n INTEGER,PRIMARY KEY(window,src,dst))")
+  c.execute("CREATE TABLE spill_port(window INTEGER,src TEXT,dp INTEGER,n INTEGER,PRIMARY KEY(window,src,dp))")
   c.execute("CREATE TEMP TABLE day AS SELECT n.src,n.n,p.u,n.i,n.p FROM (SELECT src,count(*) n,count(DISTINCT dst)i,count(DISTINCT dp)p FROM syn GROUP BY src)n LEFT JOIN (SELECT src,count(*)u FROM (SELECT DISTINCT src,dst,dp FROM syn)GROUP BY src)p ON n.src=p.src")
   for w,name in ((300,'w5'),(900,'w15'),(3600,'w1')):
    c.execute(f"CREATE TABLE {name}(id PRIMARY KEY,n,u,i,p)"); q=c.execute("SELECT id,ts,src FROM m WHERE flags IS NOT NULL AND(flags&2)!=0 AND(flags&16)=0 ORDER BY src,ts,id")
-   current=None;ev=iter(());next_ev=None;active=deque();pair=Counter();ip=Counter();port=Counter();out=[]
+   current=None;ev=iter(());next_ev=None;active=deque();pair=Counter();ip=Counter();port=Counter();out=[];spilled=False;spill_state={"packets":0,"pairs":0,"ips":0,"ports":0,"seq":0,"oldest":None}
    for ident,ts,src in q:
-    if src!=current: current=src;ev=iter(c.execute("SELECT ts,dst,dp FROM syn WHERE src=? ORDER BY ts",(src,)));next_ev=next(ev,None);active.clear();pair.clear();ip.clear();port.clear()
+    if src!=current: current=src;ev=iter(c.execute("SELECT ts,dst,dp FROM syn WHERE src=? ORDER BY ts",(src,)));next_ev=next(ev,None);active.clear();pair.clear();ip.clear();port.clear();spilled=False;spill_state={"packets":0,"pairs":0,"ips":0,"ports":0,"seq":0,"oldest":None}
     while next_ev and next_ev[0]<=ts+w:
-     x=next_ev;active.append(x);pair[(x[1],x[2])]+=1;ip[x[1]]+=1;port[x[2]]+=1;next_ev=next(ev,None)
-     if len(active)>self.active_state_limit: self.spill_used=True
-    while active and active[0][0]<ts-w:
+     x=next_ev
+     if not spilled and len(active) >= self.active_state_limit:
+      self._migrate_window_to_spill(w,src,active,pair,ip,port,spill_state); active.clear();pair.clear();ip.clear();port.clear();spilled=True
+     if spilled: self._spill_add(w,src,x,spill_state)
+     else: active.append(x);pair[(x[1],x[2])]+=1;ip[x[1]]+=1;port[x[2]]+=1;self._observe_python_state(active,pair,ip,port)
+     next_ev=next(ev,None)
+    if spilled: self._spill_expire(w,src,ts-w,spill_state)
+    while not spilled and active and active[0][0]<ts-w:
      x=active.popleft();pair[(x[1],x[2])]-=1;ip[x[1]]-=1;port[x[2]]-=1
      if not pair[(x[1],x[2])]:del pair[(x[1],x[2])]
      if not ip[x[1]]:del ip[x[1]]
      if not port[x[2]]:del port[x[2]]
-    out.append((ident,len(active),len(pair),len(ip),len(port)))
+    out.append((ident,spill_state["packets"],spill_state["pairs"],spill_state["ips"],spill_state["ports"]) if spilled else (ident,len(active),len(pair),len(ip),len(port)))
     if len(out)>=self.batch_size:c.executemany(f"INSERT INTO {name} VALUES(?,?,?,?,?)",out);out.clear()
    if out:c.executemany(f"INSERT INTO {name} VALUES(?,?,?,?,?)",out)
   c.execute("CREATE TABLE s AS SELECT m.id,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN 1 ELSE 0 END app,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN m.src END src,w5.n,w5.u,w5.i,w5.p,w15.n,w15.u,w15.i,w15.p,w1.n,w1.u,w1.i,w1.p,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN day.n END,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN day.u END,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN day.i END,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN day.p END FROM m LEFT JOIN w5 ON m.id=w5.id LEFT JOIN w15 ON m.id=w15.id LEFT JOIN w1 ON m.id=w1.id LEFT JOIN day ON m.src=day.src")
+ def _observe_python_state(self, active, pair, ip, port) -> None:
+  self.max_python_active_events=max(self.max_python_active_events,len(active)); self.max_python_pair_entries=max(self.max_python_pair_entries,len(pair)); self.max_python_ip_entries=max(self.max_python_ip_entries,len(ip)); self.max_python_port_entries=max(self.max_python_port_entries,len(port))
+ def _spill_add(self,w,src,event,state) -> None:
+  ts,dst,dp=event; state["seq"]+=1; self.connection.execute("INSERT INTO spill_event VALUES(?,?,?,?,?,?)",(w,src,state["seq"],ts,dst,dp)); state["packets"]+=1
+  for table,fields,key,count in (("spill_pair","dst,dp",(dst,dp),"pairs"),("spill_ip","dst",(dst,),"ips"),("spill_port","dp",(dp,),"ports")):
+   where=" AND ".join(f"{field}=?" for field in fields.split(",")); row=self.connection.execute(f"SELECT n FROM {table} WHERE window=? AND src=? AND {where}",(w,src,*key)).fetchone()
+   if row is None: self.connection.execute(f"INSERT INTO {table}(window,src,{fields},n) VALUES(?,?,{','.join('?' for _ in key)},1)",(w,src,*key)); state[count]+=1
+   else:self.connection.execute(f"UPDATE {table} SET n=n+1 WHERE window=? AND src=? AND {where}",(w,src,*key))
+  if state["oldest"] is None: state["oldest"]=ts
+ def _migrate_window_to_spill(self,w,src,active,pair,ip,port,state) -> None:
+  self.connection.execute("SAVEPOINT spill_migration")
+  try:
+   for event in active:self._spill_add(w,src,event,state)
+   if state["packets"] != len(active):raise ValueError("spill migration verification failed")
+   self.connection.execute("RELEASE spill_migration");self.spill_used=True;self.spill_count+=1
+  except BaseException:self.connection.execute("ROLLBACK TO spill_migration");self.connection.execute("RELEASE spill_migration");raise
+ def _spill_expire(self,w,src,cutoff,state) -> None:
+  while state["oldest"] is not None and state["oldest"] < cutoff:
+   rows=list(self.connection.execute("SELECT seq,ts,dst,dp FROM spill_event WHERE window=? AND src=? AND ts<? ORDER BY seq LIMIT ?",(w,src,cutoff,self.spill_batch_size)));self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(rows))
+   if not rows: state["oldest"]=None;break
+   for seq,ts,dst,dp in rows:
+    self.connection.execute("DELETE FROM spill_event WHERE window=? AND src=? AND seq=?",(w,src,seq));state["packets"]-=1
+    for table,fields,key,count in (("spill_pair","dst,dp",(dst,dp),"pairs"),("spill_ip","dst",(dst,),"ips"),("spill_port","dp",(dp,),"ports")):
+     where=" AND ".join(f"{field}=?" for field in fields.split(",")); row=self.connection.execute(f"SELECT n FROM {table} WHERE window=? AND src=? AND {where}",(w,src,*key)).fetchone()
+     if row[0]==1:self.connection.execute(f"DELETE FROM {table} WHERE window=? AND src=? AND {where}",(w,src,*key));state[count]-=1
+     else:self.connection.execute(f"UPDATE {table} SET n=n-1 WHERE window=? AND src=? AND {where}",(w,src,*key))
+   state["oldest"]=self.connection.execute("SELECT min(ts) FROM spill_event WHERE window=? AND src=?",(w,src)).fetchone()[0]
  def iter_context_rows(self)->Iterator[dict]:
   q="SELECT c.source_flow_id,m.*,t.* FROM m JOIN cohort c ON c.id=m.id JOIN t ON m.id=t.id ORDER BY m.id"
   for r in self.connection.execute(q):
