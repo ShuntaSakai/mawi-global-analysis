@@ -75,7 +75,7 @@ class SQLiteContextAggregator:
    self.connection=connection; self.ingested_chunks=[row[0] for row in connection.execute("SELECT chunk_id FROM ingestion_ledger ORDER BY rowid")]; return True
   except (OSError,json.JSONDecodeError,sqlite3.Error): return False
  def _quarantine_stale_state(self)->None:
-  for value in (self.path,self.checkpoint_path):
+  for value in (self.path, Path(str(self.path)+"-journal"), Path(str(self.path)+"-wal"), Path(str(self.path)+"-shm"), self.checkpoint_path, self.checkpoint_path.with_suffix(".tmp")):
    if value.exists():
     suffix = 1
     destination = value.with_name(f"{value.name}.stale.{suffix}")
