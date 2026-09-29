@@ -1,6 +1,7 @@
 """Disk-backed, bounded-batch DITL context aggregation."""
 from __future__ import annotations
 import json
+import os
 import shutil
 import sqlite3
 from collections import Counter, deque
@@ -38,6 +39,10 @@ class SQLiteContextAggregator:
  def __init__(self,path:Path,cohort:pd.DataFrame,*,batch_size:int=10_000,identity:dict|None=None)->None:
   self.path,self.batch_size=Path(path),batch_size; self.checkpoint_path=self.path.with_suffix(".checkpoint.json")
   self.identity={"schema_version":SQLITE_SCHEMA_VERSION,**(identity or {})}
+  self.ingested_chunks: list[str] = []
+  if self.path.exists() or self.checkpoint_path.exists():
+   if self._resume_if_compatible(): return
+   self._quarantine_stale_state()
   self.connection=sqlite3.connect(self.path)
   c=self.connection; c.execute("PRAGMA cache_size=-65536"); c.execute("PRAGMA temp_store=FILE")
   c.execute("CREATE TABLE cohort(id INTEGER PRIMARY KEY,source_flow_id,ts REAL,a TEXT,ap INTEGER,b TEXT,bp INTEGER,p INTEGER)")
@@ -48,20 +53,35 @@ class SQLiteContextAggregator:
     k=FlowKey.from_packet(str(r.src_ip),int(r.src_port),str(r.dst_ip),int(r.dst_port),int(r.protocol)); yield i,r.source_flow_id,float(r.target_timestamp),k.endpoint_a.ip,k.endpoint_a.port,k.endpoint_b.ip,k.endpoint_b.port,k.protocol
   self._insert("INSERT INTO cohort VALUES(?,?,?,?,?,?,?,?)",rows()); c.commit()
   self._write_checkpoint([])
+ def _resume_if_compatible(self)->bool:
+  try:
+   record=json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
+   if record.get("identity") != self.identity: return False
+   connection=sqlite3.connect(self.path)
+   if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",): connection.close(); return False
+   self.connection=connection; self.ingested_chunks=list(record.get("ingested",[])); return True
+  except (OSError,json.JSONDecodeError,sqlite3.Error): return False
+ def _quarantine_stale_state(self)->None:
+  for value in (self.path,self.checkpoint_path):
+   if value.exists(): value.replace(value.with_name(value.name+".stale"))
  def _write_checkpoint(self, ingested:list[str])->None:
-  self.checkpoint_path.write_text(json.dumps({"identity":self.identity,"ingested":ingested},sort_keys=True),encoding="utf-8")
+  temporary=self.checkpoint_path.with_suffix(".tmp")
+  temporary.write_text(json.dumps({"identity":self.identity,"ingested":ingested},sort_keys=True),encoding="utf-8")
+  os.replace(temporary,self.checkpoint_path)
  def _insert(self,sql:str,rows:Iterable[tuple])->None:
   batch=[]
   for r in rows:
    batch.append(r)
    if len(batch)>=self.batch_size: self.connection.executemany(sql,batch); batch.clear()
   if batch:self.connection.executemany(sql,batch)
- def ingest_frames(self,targets:pd.DataFrame,syns:pd.DataFrame)->None:
+ def ingest_frames(self,targets:pd.DataFrame,syns:pd.DataFrame,*,chunk_id:str|None=None)->None:
   def obs():
    for r in targets.itertuples(index=False):
     k=FlowKey.from_packet(str(r.src_ip),int(r.src_port),str(r.dst_ip),int(r.dst_port),int(r.protocol)); f=None if pd.isna(r.tcp_flags_raw) else int(r.tcp_flags_raw)
     yield float(r.timestamp),k.endpoint_a.ip,k.endpoint_a.port,k.endpoint_b.ip,k.endpoint_b.port,k.protocol,str(r.src_ip),int(r.src_port),str(r.dst_ip),int(r.dst_port),int(r.captured_frame_length),int(r.original_frame_length),int(r.ip_total_length),int(r.transport_payload_length),f
   self._insert("INSERT INTO o VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",obs()); self._insert("INSERT INTO syn VALUES(?,?,?,?)",((float(r.timestamp),str(r.src_ip),str(r.dst_ip),int(r.dst_port)) for r in syns.itertuples(index=False))); self.connection.commit()
+  if chunk_id is not None:
+   self.ingested_chunks.append(chunk_id); self._write_checkpoint(self.ingested_chunks)
  def compute(self)->None:
   c=self.connection;c.execute("CREATE INDEX ok ON o(a,ap,b,bp,p,ts)");c.execute("CREATE INDEX sk ON syn(src,ts)")
   c.execute("CREATE TABLE m AS SELECT c.id,o.* FROM cohort c JOIN o ON c.a=o.a AND c.ap=o.ap AND c.b=o.b AND c.bp=o.bp AND c.p=o.p AND c.ts=o.ts")

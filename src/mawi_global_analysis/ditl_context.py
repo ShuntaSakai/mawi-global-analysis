@@ -52,6 +52,10 @@ def run_ditl_one_packet_context(
     if (not isinstance(source_input.get("path"), str) or Path(source_input["path"]).resolve() != target_path
             or not target_path.is_file() or sha256_file(target_path) != source_input["sha256"]):
         raise ValueError("target chunk checksum does not match source-run input provenance")
+    # The cohort and copied source-input values are the only source RunData
+    # facts needed by this 24-hour orchestration.  Do not retain its large
+    # flows/labels tables while downloading or aggregating DITL chunks.
+    del run
 
     cache_root = root / "data" / dataset_id / "processed" / "one_packet_context_chunks" / cohort_identity(cohort)
     data_root = (root / "data").resolve()
@@ -115,9 +119,12 @@ def run_ditl_one_packet_context(
     aggregator = SQLiteContextAggregator(database_path, cohort, identity={"cohort_identity": cohort_identity(cohort), "chunk_ids": chunk_ids})
     try:
         for index, chunk_id in enumerate(chunk_ids, start=1):
+            if chunk_id in aggregator.ingested_chunks:
+                LOGGER.info("ingesting chunk %d/%d: %s (checkpoint reused)", index, len(chunk_ids), chunk_id)
+                continue
             LOGGER.info("ingesting chunk %d/%d: %s", index, len(chunk_ids), chunk_id)
             chunk = load_completed_chunk_observations(cache_root, chunk_id, cohort)
-            aggregator.ingest_frames(chunk.target_packets, chunk.source_syn_packets)
+            aggregator.ingest_frames(chunk.target_packets, chunk.source_syn_packets, chunk_id=chunk_id)
             del chunk
         LOGGER.info("building indexes and computing tuple/source context")
         aggregator.compute()

@@ -1,6 +1,7 @@
 """Thin CLI for safe sequential DITL one-packet-context orchestration."""
 from __future__ import annotations
 import argparse
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 from mawi_global_analysis.ditl_context import run_ditl_one_packet_context
@@ -19,6 +20,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     run_ditl_one_packet_context(a.dataset, a.source_run, a.date, a.target_chunk, a.target_chunk_path,
         a.url_template, a.context_run_name, root=a.root, timeout=a.timeout, retries=a.retries,
         backoff_seconds=a.backoff_seconds, delay_seconds=a.delay_seconds)

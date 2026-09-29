@@ -50,8 +50,8 @@ def test_orchestrator_processes_target_checkpoint_before_other_slots(monkeypatch
     monkeypatch.setattr(orchestration, "load_completed_chunk_observations", load_cache)
     ingested: list[str] = []
     class FakeAggregator:
-        def __init__(self, *args, **kwargs): pass
-        def ingest_frames(self, target, source): ingested.append("chunk")
+        def __init__(self, *args, **kwargs): self.ingested_chunks = []
+        def ingest_frames(self, target, source, **kwargs): ingested.append("chunk")
         def compute(self): pass
         def close(self, **kwargs): pass
     monkeypatch.setattr(orchestration, "SQLiteContextAggregator", FakeAggregator)
