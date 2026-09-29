@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -44,6 +46,120 @@ def _syn(timestamp: float, dst: str, port: int, source: str = "198.51.100.1") ->
         "dst_ip": dst,
         "dst_port": port,
     }
+
+
+def _disk_metadata(
+    tmp_path: Path,
+    *,
+    chunk_id: str = "chunk",
+    target_rows: int = 10,
+    source_rows: int = 5,
+    target_bytes: int = 1_000,
+    source_bytes: int = 500,
+) -> dict[str, object]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    target_path = tmp_path / f"{chunk_id}-targets.csv"
+    source_path = tmp_path / f"{chunk_id}-syns.csv"
+    target_path.write_bytes(b"t" * target_bytes)
+    source_path.write_bytes(b"s" * source_bytes)
+    return {
+        "chunk_id": chunk_id,
+        "target_observation_row_count": target_rows,
+        "source_syn_observation_row_count": source_rows,
+        "artifacts": {
+            "target_observations": {"path": str(target_path), "row_count": target_rows},
+            "source_syn_observations": {"path": str(source_path), "row_count": source_rows},
+        },
+    }
+
+
+def test_disk_estimate_has_explainable_nonzero_components(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import estimate_aggregation_disk_space
+
+    estimate = estimate_aggregation_disk_space(
+        [_disk_metadata(tmp_path)], cohort_row_count=100,
+        available_bytes=10**15,
+    )
+    assert estimate.cache_observation_bytes == 1_500
+    assert estimate.sqlite_raw_bytes > 0
+    assert estimate.sqlite_index_bytes > 0
+    assert estimate.derived_bytes > 0
+    assert estimate.spill_headroom_bytes > 0
+    assert estimate.sqlite_temp_journal_bytes > 0
+    assert estimate.publication_bytes > 0
+    assert estimate.safety_margin_bytes > 0
+    assert estimate.required_bytes == sum((
+        estimate.cache_observation_bytes,
+        estimate.sqlite_raw_bytes,
+        estimate.sqlite_index_bytes,
+        estimate.derived_bytes,
+        estimate.spill_headroom_bytes,
+        estimate.sqlite_temp_journal_bytes,
+        estimate.publication_bytes,
+        estimate.safety_margin_bytes,
+    ))
+
+
+@pytest.mark.parametrize(
+    ("target_rows", "source_rows", "cohort_rows", "component"),
+    [
+        (20, 5, 100, "sqlite_raw_bytes"),
+        (10, 20, 100, "spill_headroom_bytes"),
+        (10, 5, 200, "publication_bytes"),
+    ],
+)
+def test_disk_estimate_increases_with_observation_and_cohort_evidence(
+    tmp_path, target_rows, source_rows, cohort_rows, component,
+):
+    from mawi_global_analysis.ditl_context_sqlite import estimate_aggregation_disk_space
+
+    baseline = estimate_aggregation_disk_space(
+        [_disk_metadata(tmp_path / "baseline")], cohort_row_count=100,
+        available_bytes=10**15,
+    )
+    changed = estimate_aggregation_disk_space(
+        [_disk_metadata(
+            tmp_path / "changed", target_rows=target_rows, source_rows=source_rows,
+        )], cohort_row_count=cohort_rows, available_bytes=10**15,
+    )
+    assert getattr(changed, component) > getattr(baseline, component)
+    assert changed.required_bytes > baseline.required_bytes
+
+
+def test_disk_estimate_handles_96_metadata_records_without_loading_frames(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import estimate_aggregation_disk_space
+
+    metadata = [
+        _disk_metadata(tmp_path / str(index), chunk_id=str(index), target_rows=1, source_rows=1)
+        for index in range(96)
+    ]
+    estimate = estimate_aggregation_disk_space(metadata, cohort_row_count=96, available_bytes=10**15)
+    assert estimate.cache_observation_bytes == 96 * 1_500
+    assert estimate.required_bytes > estimate.cache_observation_bytes
+
+
+def test_disk_estimate_rejects_negative_or_invalid_metadata(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import estimate_aggregation_disk_space
+
+    bad = _disk_metadata(tmp_path, target_rows=-1)
+    with pytest.raises(ValueError, match="non-negative"):
+        estimate_aggregation_disk_space([bad], cohort_row_count=1, available_bytes=10**15)
+    with pytest.raises(ValueError, match="non-negative"):
+        estimate_aggregation_disk_space([], cohort_row_count=-1, available_bytes=10**15)
+
+
+def test_disk_preflight_rejects_insufficient_space_before_aggregation(tmp_path, monkeypatch):
+    import mawi_global_analysis.ditl_context_sqlite as sqlite_context
+
+    metadata = [_disk_metadata(tmp_path)]
+    monkeypatch.setattr(
+        sqlite_context.shutil, "disk_usage",
+        lambda _: type("Usage", (), {"free": 1})(),
+    )
+    with pytest.raises(sqlite_context.InsufficientAggregationDiskSpace, match="required"):
+        sqlite_context.require_aggregation_disk_space(
+            tmp_path, metadata, cohort_row_count=100,
+        )
 
 
 def test_sqlite_aggregator_requires_exact_timestamp_and_streams_source_windows(tmp_path):

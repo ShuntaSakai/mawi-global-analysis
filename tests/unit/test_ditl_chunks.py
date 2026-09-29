@@ -38,7 +38,7 @@ def test_orchestrator_processes_target_checkpoint_before_other_slots(monkeypatch
     all_chunks = tuple(f"20260408{hour:02d}{minute:02d}" for hour in range(24) for minute in (0, 15, 30, 45))
     monkeypatch.setattr(orchestration, "expected_chunk_ids", lambda day: all_chunks)
     monkeypatch.setattr(orchestration, "load_run", lambda *a, **k: SimpleNamespace(manifest={"input": {"sha256": digest, "path": str(target)}}))
-    monkeypatch.setattr(orchestration, "build_one_packet_cohort_from_run", lambda run: object())
+    monkeypatch.setattr(orchestration, "build_one_packet_cohort_from_run", lambda run: [])
     monkeypatch.setattr(orchestration, "cohort_identity", lambda cohort: "cohort")
     cache_root = tmp_path / "data" / "dataset" / "processed" / "one_packet_context_chunks" / "cohort"
     for chunk_id in all_chunks:
@@ -99,7 +99,7 @@ def test_owned_target_raw_is_deleted_only_after_successful_publication(
     monkeypatch.setattr(orchestration, "load_run", lambda *_, **__: SimpleNamespace(
         manifest={"input": {"sha256": digest, "path": str(target)}},
     ))
-    monkeypatch.setattr(orchestration, "build_one_packet_cohort_from_run", lambda _: object())
+    monkeypatch.setattr(orchestration, "build_one_packet_cohort_from_run", lambda _: [])
     monkeypatch.setattr(orchestration, "cohort_identity", lambda _: "cohort")
     monkeypatch.setattr(orchestration, "ownership_path", lambda _: ownership)
     monkeypatch.setattr(
@@ -197,7 +197,7 @@ def test_orchestrator_quarantines_invalid_ledger_state_and_keeps_chunk_caches(
     monkeypatch.setattr(orchestration, "load_run", lambda *_, **__: SimpleNamespace(
         manifest={"input": {"sha256": digest, "path": str(target)}},
     ))
-    monkeypatch.setattr(orchestration, "build_one_packet_cohort_from_run", lambda _: object())
+    monkeypatch.setattr(orchestration, "build_one_packet_cohort_from_run", lambda _: [])
     monkeypatch.setattr(orchestration, "cohort_identity", lambda _: "cohort")
     monkeypatch.setattr(
         orchestration,

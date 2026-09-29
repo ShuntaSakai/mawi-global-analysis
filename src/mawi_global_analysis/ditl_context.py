@@ -113,8 +113,26 @@ def run_ditl_one_packet_context(
         raise ValueError("all 96 expected DITL chunk caches are required")
     LOGGER.info("starting final aggregation")
     spool_root.mkdir(parents=True, exist_ok=True)
-    required_bytes = require_aggregation_disk_space(spool_root, [validated_by_id[chunk_id] for chunk_id in chunk_ids])
-    LOGGER.info("SQLite disk preflight reserved %d bytes", required_bytes)
+    disk_estimate = require_aggregation_disk_space(
+        spool_root,
+        [validated_by_id[chunk_id] for chunk_id in chunk_ids],
+        cohort_row_count=len(cohort),
+    )
+    LOGGER.info(
+        "SQLite disk preflight: required=%d available=%d cache=%d raw=%d "
+        "indexes=%d derived=%d spill=%d temp_journal=%d publication=%d "
+        "safety_margin=%d",
+        disk_estimate.required_bytes,
+        disk_estimate.available_bytes,
+        disk_estimate.cache_observation_bytes,
+        disk_estimate.sqlite_raw_bytes,
+        disk_estimate.sqlite_index_bytes,
+        disk_estimate.derived_bytes,
+        disk_estimate.spill_headroom_bytes,
+        disk_estimate.sqlite_temp_journal_bytes,
+        disk_estimate.publication_bytes,
+        disk_estimate.safety_margin_bytes,
+    )
     database_path = spool_root / ".aggregation.sqlite3"
     metadata_identities = [stable_json_hash(validated_by_id[chunk_id]) for chunk_id in chunk_ids]
     aggregation_identity = {
