@@ -111,3 +111,29 @@ def test_prolific_source_uses_spill_and_preserves_inclusive_windows(tmp_path):
     assert spilled.max_python_active_events <= 10
     assert spilled.max_spill_batch_rows <= 17
     assert list(spilled.iter_source_context_rows()) == expected
+
+
+@pytest.mark.parametrize("kwargs", [{"batch_size": 0}, {"active_state_limit": 0}, {"spill_batch_size": 0}])
+def test_sqlite_aggregator_rejects_non_positive_limits(tmp_path, kwargs):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    with pytest.raises(ValueError, match="positive"):
+        SQLiteContextAggregator(tmp_path / "aggregation.sqlite3", _cohort(), **kwargs)
+
+
+def test_spilled_window_slides_across_multiple_targets_like_memory(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    cohort = pd.concat([_cohort().assign(source_flow_id=index, target_timestamp=float(timestamp)) for index, timestamp in enumerate((0, 100, 200), 1)], ignore_index=True)
+    targets = pd.DataFrame([_target(float(timestamp)) for timestamp in (0, 100, 200)])
+    syns = pd.DataFrame([
+        {"timestamp": float(timestamp), "src_ip": "198.51.100.1", "dst_ip": f"192.0.2.{index % 3 + 2}", "dst_port": 80 + index % 2}
+        for index, timestamp in enumerate(range(-400, 701, 10))
+    ])
+    memory = SQLiteContextAggregator(tmp_path / "memory.sqlite3", cohort, active_state_limit=10_000)
+    memory.ingest_frames(targets, syns); memory.compute(); expected = list(memory.iter_source_context_rows())
+    spill = SQLiteContextAggregator(tmp_path / "spill.sqlite3", cohort, active_state_limit=10, spill_batch_size=7)
+    spill.ingest_frames(targets, syns); spill.compute()
+    assert memory.spill_used is False
+    assert spill.spill_used is True
+    assert list(spill.iter_source_context_rows()) == expected

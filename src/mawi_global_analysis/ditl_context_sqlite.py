@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sqlite3
+from itertools import islice
 from collections import Counter, deque
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -146,6 +147,9 @@ class SQLiteContextAggregator:
   # Spill tables are derived compute state.  They are dropped at the start of
   # compute with every other derived table, never persisted as cache input.
   c.execute("CREATE TABLE spill_event(window INTEGER,src TEXT,seq INTEGER,ts REAL,dst TEXT,dp INTEGER,PRIMARY KEY(window,src,seq))")
+  # Expiration filters by timestamp; this avoids scanning another source's
+  # active events before ordering the bounded expired batch by sequence.
+  c.execute("CREATE INDEX spill_expiry ON spill_event(window,src,ts,seq)")
   c.execute("CREATE TABLE spill_pair(window INTEGER,src TEXT,dst TEXT,dp INTEGER,n INTEGER,PRIMARY KEY(window,src,dst,dp))")
   c.execute("CREATE TABLE spill_ip(window INTEGER,src TEXT,dst TEXT,n INTEGER,PRIMARY KEY(window,src,dst))")
   c.execute("CREATE TABLE spill_port(window INTEGER,src TEXT,dp INTEGER,n INTEGER,PRIMARY KEY(window,src,dp))")
@@ -184,22 +188,23 @@ class SQLiteContextAggregator:
  def _migrate_window_to_spill(self,w,src,active,pair,ip,port,state) -> None:
   self.connection.execute("SAVEPOINT spill_migration")
   try:
-   events=list(active)
-   for offset in range(0,len(events),self.spill_batch_size):
-    batch=events[offset:offset+self.spill_batch_size];self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
+   event_count=len(active)
+   iterator=iter(active)
+   while batch:=list(islice(iterator,self.spill_batch_size)):
+    self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
     rows=[]
     for event in batch: state["seq"]+=1;rows.append((w,src,state["seq"],*event))
     self.connection.executemany("INSERT INTO spill_event VALUES(?,?,?,?,?,?)",rows)
    for table,fields,values,count in (("spill_pair","dst,dp",pair.items(),"pairs"),("spill_ip","dst",ip.items(),"ips"),("spill_port","dp",port.items(),"ports")):
-    material=list(values)
-    for offset in range(0,len(material),self.spill_batch_size):
-     batch=material[offset:offset+self.spill_batch_size];self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
+    entry_count=len(values);iterator=iter(values)
+    while batch:=list(islice(iterator,self.spill_batch_size)):
+     self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
      rows=[]
      for key,n in batch:
       key=(key,) if not isinstance(key,tuple) else key;rows.append((w,src,*key,n))
      self.connection.executemany(f"INSERT INTO {table}(window,src,{fields},n) VALUES(?,?,{','.join('?' for _ in range(len(rows[0])-2))})",rows)
-    state[count]=len(material)
-   state["packets"]=len(events);state["oldest"]=events[0][0] if events else None
+    state[count]=entry_count
+   state["packets"]=event_count;state["oldest"]=active[0][0] if active else None
    if (state["packets"],state["pairs"],state["ips"],state["ports"]) != (len(active),len(pair),len(ip),len(port)):raise ValueError("spill migration verification failed")
    self.connection.execute("RELEASE spill_migration");self.spill_used=True;self.spill_count+=1;self.spill_count_by_window[w]+=1
   except BaseException:self.connection.execute("ROLLBACK TO spill_migration");self.connection.execute("RELEASE spill_migration");raise
