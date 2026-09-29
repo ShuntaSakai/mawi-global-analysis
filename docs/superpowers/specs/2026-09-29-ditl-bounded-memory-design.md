@@ -77,21 +77,48 @@ counts.  This preserves the original direction-independent key behavior and
 target-relative direction definitions.
 
 Source context first groups every source's full-day count and distinct
-destination-pair/IP/port statistics once.  For applicable plain-SYN targets,
-one indexed range join materializes only source-observation/target pairs
-within one hour.  Set-based grouped passes over that relation compute the
-5-minute, 15-minute, and one-hour counts and distinct pair/IP/port statistics
-at inclusive boundaries.  It does not issue separate SQL statements per
-target.  Non-applicable targets retain null source statistics exactly as now.
+destination-pair/IP/port statistics once.  It then processes applicable
+targets and source-SYN observations one source at a time, both ordered by
+timestamp.  Three inclusive sliding windows (5 minutes, 15 minutes, and one
+hour) advance left/right cursors over that source's SYN observations.  Each
+window maintains packet count plus reference-counted destination-pair,
+destination-IP, and destination-port maps.  A source's target rows are
+written to disk-backed result tables in bounded batches before moving to the
+next source.  This avoids a global target-by-observation pair relation.
 
-For `C` cohort rows, `O` target observations, `S` source observations, and
-`M` source pairs within one hour, ingest is `O + S` rows in bounded batches;
-indexed joins are approximately `O log O + C log O` plus the unavoidable
-tuple-match output cardinality, and source work is `S log S + C log S + M`
-with a fixed number of grouped scans over `M`.  Memory is bounded by SQLite
-page/cache settings and write batches, rather than `C`, `O`, `S`, or 96
-DataFrames.  Disk usage, rather than RAM, scales with the relations and
-indexes.
+The scan uses a bounded source partition: if a source has more observations
+or applicable targets than the configured in-memory partition limit, its
+ordered rows are read in overlapping timestamp blocks, with the left/right
+window state carried across blocks.  The maximum live state is the largest
+one-hour active window (or the configured spill representation), not every
+target/SYN pair for that source.  A temporary SQLite spill table backs the
+reference counts when that active window crosses the memory threshold, so one
+prolific source cannot force unbounded RAM.  Non-applicable targets retain
+null source statistics exactly as now.
+
+For `C` cohort rows, `O` target observations, and `S` source observations,
+ingest is `O + S` rows in bounded batches; indexed tuple joins are
+approximately `O log O + C log O` plus the unavoidable tuple-match output
+cardinality.  The source pass is an ordered `O + S` scan with a constant
+three-window factor and logarithmic/reference-count updates; it never has a
+target/SYN-pair-table cardinality term.  Memory is bounded by SQLite
+page/cache settings, write batches, and the configured active-window spill
+threshold, rather than `C`, `O`, `S`, or 96 DataFrames. Disk usage scales with
+input relations, indexes, aggregate results, and any spill state—not a
+Cartesian window-pair relation.
+
+## Restart behavior
+
+The SQLite database has its own small JSON checkpoint beside it containing a
+schema version, aggregation-code identity, cohort identity, ordered 96 chunk
+metadata identities, and an ingestion checkpoint.  A database is resumable
+only when all of those identities match and SQLite integrity checks pass; a
+resume continues at the first uncommitted chunk after independently
+revalidating its durable cache.  Any missing, malformed, identity-mismatched,
+or failed-integrity database is never reused.  It is renamed to a
+timestamped diagnostic path (not deleted) and a fresh database is built from
+the durable caches.  This policy preserves caches and makes stale state
+explicit rather than silently trusting it.
 
 ## Publication and safety
 

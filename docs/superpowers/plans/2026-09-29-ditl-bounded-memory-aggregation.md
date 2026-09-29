@@ -161,7 +161,7 @@ cohort ordering.
 Run: `uv run pytest tests/unit/test_ditl_context_sqlite.py -k 'tuple or timestamp' -v`
 Expected: PASS.
 
-### Task 4: Set-based source context
+### Task 4: Ordered sliding-window source context
 
 **Files:**
 - Modify: `src/mawi_global_analysis/ditl_context_sqlite.py`
@@ -186,15 +186,17 @@ def test_sqlite_results_are_chunk_order_independent_and_deterministic(...):
 Run: `uv run pytest tests/unit/test_ditl_context_sqlite.py -k 'source or order' -v`
 Expected: FAIL because source context is not implemented.
 
-- [ ] **Step 3: Implement source-wide and interval-pair aggregate passes**
+- [ ] **Step 3: Implement source-wide and sliding-window aggregate passes**
 
 Compute full-day statistics once grouped by source. Build applicable target
-rows only when the target packet is plain SYN. Materialize one indexed
-source-pair relation for inclusive ±1h matches; perform a fixed set of grouped
-passes over it for count and distinct destination pair/IP/port at 5m, 15m,
-and 1h. Join full-day stats and window results back to all target rows, using
-null statistics for non-applicable targets. Do not execute source queries per
-target.
+rows only when the target packet is plain SYN. For each source, stream
+timestamp-ordered target and SYN rows through three inclusive sliding windows
+with ref-counted packet/pair/IP/port statistics, flushing source results in
+bounded batches. Carry state between bounded partitions; spill active-window
+refcounts to SQLite at the configured threshold. Join full-day statistics back
+to all target rows, using null statistics for non-applicable targets. Do not
+execute SQL statements per target or materialize a global target/SYN-pair
+relation.
 
 - [ ] **Step 4: Run focused tests to verify pass**
 
