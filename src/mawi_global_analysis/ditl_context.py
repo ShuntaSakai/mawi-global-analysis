@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 
 from mawi_global_analysis.ditl_chunks import expected_chunk_ids, render_chunk_url, validate_target_chunk
 from mawi_global_analysis.ditl_downloader import (
@@ -16,6 +17,9 @@ from mawi_global_analysis.one_packet_context_chunks import (
     load_completed_chunk_observations,
 )
 from mawi_global_analysis.one_packet_context_run import write_one_packet_context_chunk_run
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def run_ditl_one_packet_context(
@@ -57,14 +61,18 @@ def run_ditl_one_packet_context(
     if spool_root.parent != spool_base:
         raise ValueError("context-run spool must remain under the DITL stream root")
     source_manifest = root / "results" / dataset_id / source_run_name / "run_manifest.json"
-    validated_by_id = {}
+    # Keep only validated metadata after each checkpoint.  A ChunkObservations
+    # value owns both observation DataFrames and must never survive an
+    # acquisition iteration.
+    validated_by_id: dict[str, dict[object, object]] = {}
     # The source-derived target is always checkpointed before any network work.
     processing_order = (target_chunk_id, *(chunk_id for chunk_id in chunk_ids if chunk_id != target_chunk_id))
     for index, chunk_id in enumerate(processing_order):
         url = render_chunk_url(url_template, chunk_id)
         raw: Path | None = target_path if chunk_id == target_chunk_id else raw_path_for(spool_root, chunk_id)
         metadata_path = cache_root / chunk_id / "chunk_metadata.json"
-        if metadata_path.exists():
+        reused = metadata_path.exists()
+        if reused:
             # Existing cache evidence must validate, never be overwritten/repaired.
             checkpoint = load_completed_chunk_observations(cache_root, chunk_id, cohort)
         else:
@@ -81,19 +89,26 @@ def run_ditl_one_packet_context(
             checkpoint = load_completed_chunk_observations(cache_root, chunk_id, cohort)
         if chunk_id == target_chunk_id and checkpoint.metadata["source"]["sha256"] != source_input["sha256"]:
             raise ValueError("target durable cache checksum does not match source-run input provenance")
-        validated_by_id[chunk_id] = checkpoint
+        metadata = checkpoint.metadata
+        validated_by_id[chunk_id] = metadata
         # Target remains until final aggregate + final loader succeeds.
         if chunk_id != target_chunk_id and raw is not None and raw.exists():
             delete_owned_raw_after_checkpoint(raw, spool_root, checkpoint,
                 expected_cohort_identity=cohort_identity(cohort), expected_chunk_id=chunk_id,
                 expected_source_url=checkpoint.metadata["source"].get("url"))
+        # DataFrames are no longer reachable once the validation/deletion
+        # prerequisite has completed.
+        del checkpoint
+        LOGGER.info("[%d/%d] %s %s", index + 1, len(chunk_ids), "reused" if reused else "extracted", chunk_id)
         if delay_seconds > 0 and index + 1 < len(chunk_ids) and chunk_id != target_chunk_id:
             time.sleep(delay_seconds)
 
     # A list from the fixed expected plan makes a missing cache impossible to hide.
     if len(validated_by_id) != 96:
         raise ValueError("all 96 expected DITL chunk caches are required")
-    validated = [validated_by_id[chunk_id] for chunk_id in chunk_ids]
+    # TODO: replace the legacy all-chunk aggregation below with the SQLite
+    # streaming publication path.  Metadata remains deliberately lightweight.
+    validated = [load_completed_chunk_observations(cache_root, chunk_id, cohort) for chunk_id in chunk_ids]
     context, source_context = aggregate_one_packet_context_chunks(cohort, validated)
     run_dir = write_one_packet_context_chunk_run(
         dataset_id, source_run_name, validated, target_chunk_id, context_run_name, cohort,
@@ -104,7 +119,9 @@ def run_ditl_one_packet_context(
     if target_path.exists() and target_path.parent == spool_root.resolve() and ownership_path(target_path).exists():
         # An owned target within this spool is deleted only after final loading;
         # a corrupt ownership/cache proof is a failure, not a reason to hide it.
-        delete_owned_raw_after_checkpoint(target_path, spool_root, validated_by_id[target_chunk_id],
+        target_checkpoint = load_completed_chunk_observations(cache_root, target_chunk_id, cohort)
+        delete_owned_raw_after_checkpoint(target_path, spool_root, target_checkpoint,
             expected_cohort_identity=cohort_identity(cohort), expected_chunk_id=target_chunk_id,
-            expected_source_url=validated_by_id[target_chunk_id].metadata["source"].get("url"))
+            expected_source_url=validated_by_id[target_chunk_id]["source"].get("url"))
+        del target_checkpoint
     return run_dir
