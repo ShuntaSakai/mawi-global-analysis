@@ -52,7 +52,7 @@ class SQLiteContextAggregator:
   self.identity={"schema_version":SQLITE_SCHEMA_VERSION,"aggregation_code_identity":aggregation_code_identity(),**(identity or {})}
   self.active_state_limit=active_state_limit; self.spill_batch_size=spill_batch_size; self.spill_used=False; self.spill_count=0; self.max_python_active_events=0; self.max_python_pair_entries=0; self.max_python_ip_entries=0; self.max_python_port_entries=0; self.max_spill_batch_rows=0
   if batch_size <= 0 or active_state_limit <= 0 or spill_batch_size <= 0: raise ValueError("batch and spill limits must be positive")
-  self.spill_count_by_window={300:0,900:0,3600:0}; self.post_spill_python_state_sizes=[]
+  self.spill_count_by_window={300:0,900:0,3600:0}; self.post_spill_python_state_sizes=[]; self.max_post_spill_python_state=(0,0,0,0); self.spill_migration_batches_by_table={"event":0,"pair":0,"ip":0,"port":0}
   self.ingested_chunks: list[str] = []
   if any(path.exists() for path in self._state_paths()):
    if self._resume_if_compatible(): return
@@ -166,7 +166,7 @@ class SQLiteContextAggregator:
      if spilled: self._spill_add(w,src,x,spill_state)
      else: active.append(x);pair[(x[1],x[2])]+=1;ip[x[1]]+=1;port[x[2]]+=1;self._observe_python_state(active,pair,ip,port)
      next_ev=next(ev,None)
-    if spilled: self._spill_expire(w,src,ts-w,spill_state)
+    if spilled: self._spill_expire(w,src,ts-w,spill_state);self.max_post_spill_python_state=tuple(max(a,b) for a,b in zip(self.max_post_spill_python_state,(len(active),len(pair),len(ip),len(port))))
     while not spilled and active and active[0][0]<ts-w:
      x=active.popleft();pair[(x[1],x[2])]-=1;ip[x[1]]-=1;port[x[2]]-=1
      if not pair[(x[1],x[2])]:del pair[(x[1],x[2])]
@@ -192,6 +192,7 @@ class SQLiteContextAggregator:
    iterator=iter(active)
    while batch:=list(islice(iterator,self.spill_batch_size)):
     self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
+    self.spill_migration_batches_by_table["event"]+=1
     rows=[]
     for event in batch: state["seq"]+=1;rows.append((w,src,state["seq"],*event))
     self.connection.executemany("INSERT INTO spill_event VALUES(?,?,?,?,?,?)",rows)
@@ -199,6 +200,7 @@ class SQLiteContextAggregator:
     entry_count=len(values);iterator=iter(values)
     while batch:=list(islice(iterator,self.spill_batch_size)):
      self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
+     self.spill_migration_batches_by_table[{"spill_pair":"pair","spill_ip":"ip","spill_port":"port"}[table]]+=1
      rows=[]
      for key,n in batch:
       key=(key,) if not isinstance(key,tuple) else key;rows.append((w,src,*key,n))
@@ -210,7 +212,7 @@ class SQLiteContextAggregator:
   except BaseException:self.connection.execute("ROLLBACK TO spill_migration");self.connection.execute("RELEASE spill_migration");raise
  def _spill_expire(self,w,src,cutoff,state) -> None:
   while state["oldest"] is not None and state["oldest"] < cutoff:
-   rows=list(self.connection.execute("SELECT seq,ts,dst,dp FROM spill_event WHERE window=? AND src=? AND ts<? ORDER BY seq LIMIT ?",(w,src,cutoff,self.spill_batch_size)));self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(rows))
+   rows=list(self.connection.execute("SELECT seq,ts,dst,dp FROM spill_event WHERE window=? AND src=? AND ts<? ORDER BY ts,seq LIMIT ?",(w,src,cutoff,self.spill_batch_size)));self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(rows))
    if not rows: state["oldest"]=None;break
    for seq,ts,dst,dp in rows:
     self.connection.execute("DELETE FROM spill_event WHERE window=? AND src=? AND seq=?",(w,src,seq));state["packets"]-=1

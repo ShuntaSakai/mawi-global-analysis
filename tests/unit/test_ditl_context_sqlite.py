@@ -110,6 +110,9 @@ def test_prolific_source_uses_spill_and_preserves_inclusive_windows(tmp_path):
     assert all(spilled.spill_count_by_window[window] >= 1 for window in (300, 900, 3600))
     assert spilled.max_python_active_events <= 10
     assert spilled.max_spill_batch_rows <= 17
+    assert spilled.max_post_spill_python_state == (0, 0, 0, 0)
+    assert spilled.spill_migration_batches_by_table["event"] > 1
+    assert spilled.spill_migration_batches_by_table["pair"] > 1
     assert list(spilled.iter_source_context_rows()) == expected
 
 
