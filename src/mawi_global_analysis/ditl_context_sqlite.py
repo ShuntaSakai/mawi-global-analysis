@@ -186,25 +186,35 @@ class SQLiteContextAggregator:
    else:self.connection.execute(f"UPDATE {table} SET n=n+1 WHERE window=? AND src=? AND {where}",(w,src,*key))
   if state["oldest"] is None: state["oldest"]=ts
  def _migrate_window_to_spill(self,w,src,active,pair,ip,port,state) -> None:
+  """Move one bounded Python window into derived SQLite state.
+
+  The savepoint makes the pre-spill Python deque/Counters authoritative until
+  its release succeeds.  Release is *not* a durable commit: it is nested in
+  ``compute()``'s outer transaction.  If that outer transaction later rolls
+  back or a process dies, the next compute attempt discards every derived
+  spill table and reconstructs it from committed raw observations.
+  """
   self.connection.execute("SAVEPOINT spill_migration")
   try:
    event_count=len(active)
    iterator=iter(active)
-   while batch:=list(islice(iterator,self.spill_batch_size)):
+   while batch:= [
+    (w,src,state["seq"] + index,*event)
+    for index,event in enumerate(islice(iterator,self.spill_batch_size),start=1)
+   ]:
     self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
     self.spill_migration_batches_by_table["event"]+=1
-    rows=[]
-    for event in batch: state["seq"]+=1;rows.append((w,src,state["seq"],*event))
-    self.connection.executemany("INSERT INTO spill_event VALUES(?,?,?,?,?,?)",rows)
+    state["seq"] += len(batch)
+    self.connection.executemany("INSERT INTO spill_event VALUES(?,?,?,?,?,?)",batch)
    for table,fields,values,count in (("spill_pair","dst,dp",pair.items(),"pairs"),("spill_ip","dst",ip.items(),"ips"),("spill_port","dp",port.items(),"ports")):
     entry_count=len(values);iterator=iter(values)
-    while batch:=list(islice(iterator,self.spill_batch_size)):
+    while batch:= [
+     (w,src,*((key,) if not isinstance(key,tuple) else key),n)
+     for key,n in islice(iterator,self.spill_batch_size)
+    ]:
      self.max_spill_batch_rows=max(self.max_spill_batch_rows,len(batch))
      self.spill_migration_batches_by_table[{"spill_pair":"pair","spill_ip":"ip","spill_port":"port"}[table]]+=1
-     rows=[]
-     for key,n in batch:
-      key=(key,) if not isinstance(key,tuple) else key;rows.append((w,src,*key,n))
-     self.connection.executemany(f"INSERT INTO {table}(window,src,{fields},n) VALUES(?,?,{','.join('?' for _ in range(len(rows[0])-2))})",rows)
+     self.connection.executemany(f"INSERT INTO {table}(window,src,{fields},n) VALUES(?,?,{','.join('?' for _ in range(len(batch[0])-2))})",batch)
     state[count]=entry_count
    state["packets"]=event_count;state["oldest"]=active[0][0] if active else None
    if (state["packets"],state["pairs"],state["ips"],state["ports"]) != (len(active),len(pair),len(ip),len(port)):raise ValueError("spill migration verification failed")
@@ -226,7 +236,32 @@ class SQLiteContextAggregator:
   for r in self.connection.execute(q):
    sid,i,ts,a,ap,b,bp,p,src,sp,dst,dp,cap,orig,iplen,pay,flags,_,total,bef,aft,fwd,prev,nxt,rb,ra,b1,b10,b60,b300,a1,a10,a60,a300=r;yield dict(zip(ONE_PACKET_CONTEXT_COLUMNS,[sid,ts,src,sp,dst,dp,cap,orig,iplen,pay,flags,_tcp_flags_text(flags),total,bef,aft,fwd,total-fwd,prev,None if prev is None else ts-prev,nxt,None if nxt is None else nxt-ts,rb,ra,b1,b10,b60,b300,a1,a10,a60,a300]))
  def iter_source_context_rows(self)->Iterator[dict]:
-  for sid,ts,*r in self.connection.execute("SELECT c.source_flow_id,m.ts,s.* FROM m JOIN cohort c ON c.id=m.id JOIN s ON s.id=m.id ORDER BY m.id"):yield dict(zip(ONE_PACKET_SOURCE_CONTEXT_COLUMNS,[sid,ts,bool(r[1]),r[2],*r[3:]]))
+  query = """
+      SELECT c.source_flow_id, m.ts, s.*
+      FROM m
+      JOIN cohort c ON c.id = m.id
+      JOIN s ON s.id = m.id
+      ORDER BY m.id
+  """
+  for sid, ts, *values in self.connection.execute(query):
+   # ``s`` is stored window-major for streaming inserts (w5, w15, w1),
+   # whereas the public CSV is statistic-major (all packet counts, then all
+   # unique pair counts, and so on).  Keep this reshuffle explicit so an
+   # internal layout change cannot silently change the artifact schema.
+   _, applicable, source_ip, *window_values, day_packets, day_pairs, day_ips, day_ports = values
+   w5, w15, w1 = (
+    window_values[offset:offset + 4]
+    for offset in range(0, 12, 4)
+   )
+   public_values = [
+    sid, ts, bool(applicable), source_ip,
+    w5[0], w15[0], w1[0],
+    w5[1], w15[1], w1[1],
+    w5[2], w15[2], w1[2],
+    w5[3], w15[3], w1[3],
+    day_packets, day_pairs, day_ips, day_ports,
+   ]
+   yield dict(zip(ONE_PACKET_SOURCE_CONTEXT_COLUMNS, public_values))
  def close(self,*,delete:bool)->None:
   self.connection.close()
   if delete and self.path.exists():self.path.unlink()
