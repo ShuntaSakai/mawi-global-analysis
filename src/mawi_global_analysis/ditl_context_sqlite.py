@@ -45,6 +45,9 @@ class SQLiteContextAggregator:
    self._quarantine_stale_state()
   self.connection=sqlite3.connect(self.path)
   c=self.connection; c.execute("PRAGMA cache_size=-65536"); c.execute("PRAGMA temp_store=FILE")
+  c.execute("CREATE TABLE state(identity TEXT NOT NULL)")
+  c.execute("INSERT INTO state VALUES(?)",(json.dumps(self.identity,sort_keys=True),))
+  c.execute("CREATE TABLE ingestion_ledger(chunk_id TEXT PRIMARY KEY,metadata_identity TEXT NOT NULL,target_rows INTEGER NOT NULL,source_rows INTEGER NOT NULL)")
   c.execute("CREATE TABLE cohort(id INTEGER PRIMARY KEY,source_flow_id,ts REAL,a TEXT,ap INTEGER,b TEXT,bp INTEGER,p INTEGER)")
   c.execute("CREATE TABLE o(ts REAL,a TEXT,ap INTEGER,b TEXT,bp INTEGER,p INTEGER,src TEXT,sp INTEGER,dst TEXT,dp INTEGER,cap INTEGER,orig INTEGER,iplen INTEGER,payload INTEGER,flags INTEGER)")
   c.execute("CREATE TABLE syn(ts REAL,src TEXT,dst TEXT,dp INTEGER)")
@@ -55,15 +58,26 @@ class SQLiteContextAggregator:
   self._write_checkpoint([])
  def _resume_if_compatible(self)->bool:
   try:
-   record=json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
-   if record.get("identity") != self.identity: return False
    connection=sqlite3.connect(self.path)
    if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",): connection.close(); return False
-   self.connection=connection; self.ingested_chunks=list(record.get("ingested",[])); return True
+   state=connection.execute("SELECT identity FROM state").fetchone()
+   if state != (json.dumps(self.identity,sort_keys=True),): connection.close(); return False
+   self.connection=connection; self.ingested_chunks=[row[0] for row in connection.execute("SELECT chunk_id FROM ingestion_ledger ORDER BY rowid")]; return True
   except (OSError,json.JSONDecodeError,sqlite3.Error): return False
  def _quarantine_stale_state(self)->None:
   for value in (self.path,self.checkpoint_path):
-   if value.exists(): value.replace(value.with_name(value.name+".stale"))
+   if value.exists():
+    suffix = 1
+    destination = value.with_name(f"{value.name}.stale.{suffix}")
+    while destination.exists():
+     suffix += 1; destination = value.with_name(f"{value.name}.stale.{suffix}")
+    value.replace(destination)
+ def validate_ingestion_ledger(self, expected: dict[str, str]) -> None:
+  """Reject any committed record not matching current durable cache metadata."""
+  rows=list(self.connection.execute("SELECT chunk_id,metadata_identity FROM ingestion_ledger"))
+  if len({row[0] for row in rows}) != len(rows): raise ValueError("duplicate SQLite ingestion ledger entries")
+  for chunk_id, identity in rows:
+   if expected.get(chunk_id) != identity: raise ValueError("SQLite ingestion ledger does not match durable chunk metadata")
  def _write_checkpoint(self, ingested:list[str])->None:
   temporary=self.checkpoint_path.with_suffix(".tmp")
   temporary.write_text(json.dumps({"identity":self.identity,"ingested":ingested},sort_keys=True),encoding="utf-8")
@@ -74,12 +88,15 @@ class SQLiteContextAggregator:
    batch.append(r)
    if len(batch)>=self.batch_size: self.connection.executemany(sql,batch); batch.clear()
   if batch:self.connection.executemany(sql,batch)
- def ingest_frames(self,targets:pd.DataFrame,syns:pd.DataFrame,*,chunk_id:str|None=None)->None:
+ def ingest_frames(self,targets:pd.DataFrame,syns:pd.DataFrame,*,chunk_id:str|None=None,chunk_identity:str|None=None)->None:
   def obs():
    for r in targets.itertuples(index=False):
     k=FlowKey.from_packet(str(r.src_ip),int(r.src_port),str(r.dst_ip),int(r.dst_port),int(r.protocol)); f=None if pd.isna(r.tcp_flags_raw) else int(r.tcp_flags_raw)
     yield float(r.timestamp),k.endpoint_a.ip,k.endpoint_a.port,k.endpoint_b.ip,k.endpoint_b.port,k.protocol,str(r.src_ip),int(r.src_port),str(r.dst_ip),int(r.dst_port),int(r.captured_frame_length),int(r.original_frame_length),int(r.ip_total_length),int(r.transport_payload_length),f
-  self._insert("INSERT INTO o VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",obs()); self._insert("INSERT INTO syn VALUES(?,?,?,?)",((float(r.timestamp),str(r.src_ip),str(r.dst_ip),int(r.dst_port)) for r in syns.itertuples(index=False))); self.connection.commit()
+  self._insert("INSERT INTO o VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",obs()); self._insert("INSERT INTO syn VALUES(?,?,?,?)",((float(r.timestamp),str(r.src_ip),str(r.dst_ip),int(r.dst_port)) for r in syns.itertuples(index=False)))
+  if chunk_id is not None:
+   self.connection.execute("INSERT INTO ingestion_ledger VALUES(?,?,?,?)",(chunk_id,chunk_identity or "",len(targets),len(syns)))
+  self.connection.commit()
   if chunk_id is not None:
    self.ingested_chunks.append(chunk_id); self._write_checkpoint(self.ingested_chunks)
  def compute(self)->None:

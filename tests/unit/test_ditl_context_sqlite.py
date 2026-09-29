@@ -61,3 +61,17 @@ def test_udp_target_gets_one_non_applicable_null_source_context_row(tmp_path):
     assert row["context_source_ip"] is None
     assert all(row[column] is None for column in row if column.startswith(("plain_syn_", "unique_")))
     aggregator.close(delete=True)
+
+
+def test_committed_ledger_survives_missing_external_checkpoint(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    path = tmp_path / "aggregation.sqlite3"
+    first = SQLiteContextAggregator(path, _cohort(), identity={"cohort_identity": "cohort"})
+    first.ingest_frames(pd.DataFrame([_target(100.0)]), pd.DataFrame(), chunk_id="chunk", chunk_identity="digest")
+    first.close(delete=False)
+    path.with_suffix(".checkpoint.json").unlink()
+
+    resumed = SQLiteContextAggregator(path, _cohort(), identity={"cohort_identity": "cohort"})
+    assert resumed.ingested_chunks == ["chunk"]
+    resumed.close(delete=True)

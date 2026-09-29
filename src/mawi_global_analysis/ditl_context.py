@@ -9,7 +9,7 @@ from mawi_global_analysis.ditl_chunks import expected_chunk_ids, render_chunk_ur
 from mawi_global_analysis.ditl_downloader import (
     delete_owned_raw_after_checkpoint, download_chunk, ownership_path, raw_path_for, validate_owned_raw,
 )
-from mawi_global_analysis.hashing import sha256_file
+from mawi_global_analysis.hashing import sha256_file, stable_json_hash
 from mawi_global_analysis.io import load_run
 from mawi_global_analysis.one_packet_context import build_one_packet_cohort_from_run
 from mawi_global_analysis.one_packet_context_chunks import (
@@ -116,7 +116,14 @@ def run_ditl_one_packet_context(
     required_bytes = require_aggregation_disk_space(spool_root, [validated_by_id[chunk_id] for chunk_id in chunk_ids])
     LOGGER.info("SQLite disk preflight reserved %d bytes", required_bytes)
     database_path = spool_root / ".aggregation.sqlite3"
-    aggregator = SQLiteContextAggregator(database_path, cohort, identity={"cohort_identity": cohort_identity(cohort), "chunk_ids": chunk_ids})
+    metadata_identities = [stable_json_hash(validated_by_id[chunk_id]) for chunk_id in chunk_ids]
+    aggregator = SQLiteContextAggregator(database_path, cohort, identity={
+        "cohort_identity": cohort_identity(cohort), "chunk_ids": chunk_ids,
+        "chunk_metadata_identities": metadata_identities,
+    })
+    aggregator.validate_ingestion_ledger({
+        chunk_id: stable_json_hash(validated_by_id[chunk_id]) for chunk_id in chunk_ids
+    })
     try:
         for index, chunk_id in enumerate(chunk_ids, start=1):
             if chunk_id in aggregator.ingested_chunks:
@@ -124,7 +131,10 @@ def run_ditl_one_packet_context(
                 continue
             LOGGER.info("ingesting chunk %d/%d: %s", index, len(chunk_ids), chunk_id)
             chunk = load_completed_chunk_observations(cache_root, chunk_id, cohort)
-            aggregator.ingest_frames(chunk.target_packets, chunk.source_syn_packets, chunk_id=chunk_id)
+            aggregator.ingest_frames(
+                chunk.target_packets, chunk.source_syn_packets, chunk_id=chunk_id,
+                chunk_identity=stable_json_hash(validated_by_id[chunk_id]),
+            )
             del chunk
         LOGGER.info("building indexes and computing tuple/source context")
         aggregator.compute()
