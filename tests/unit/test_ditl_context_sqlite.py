@@ -46,3 +46,18 @@ def test_sqlite_aggregator_rejects_nearby_timestamp_not_exact(tmp_path):
     with pytest.raises(ValueError, match="missing target"):
         aggregator.compute()
     aggregator.close(delete=False)
+
+
+def test_udp_target_gets_one_non_applicable_null_source_context_row(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    cohort = _cohort(); cohort.loc[0, ["protocol", "src_ip", "src_port", "dst_ip", "dst_port"]] = [17, "198.51.100.2", 50000, "192.0.2.2", 53]
+    target = _target(100.0, "198.51.100.2", 50000); target.update({"protocol": 17, "dst_ip": "192.0.2.2", "dst_port": 53, "tcp_flags_raw": None})
+    aggregator = SQLiteContextAggregator(tmp_path / "aggregation.sqlite3", cohort)
+    aggregator.ingest_frames(pd.DataFrame([target]), pd.DataFrame())
+    aggregator.compute()
+    row = next(aggregator.iter_source_context_rows())
+    assert row["source_context_applicable"] is False
+    assert row["context_source_ip"] is None
+    assert all(row[column] is None for column in row if column.startswith(("plain_syn_", "unique_")))
+    aggregator.close(delete=True)
