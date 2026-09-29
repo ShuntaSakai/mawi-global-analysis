@@ -54,7 +54,13 @@ class SQLiteContextAggregator:
   if batch_size <= 0 or active_state_limit <= 0 or spill_batch_size <= 0: raise ValueError("batch and spill limits must be positive")
   self.spill_count_by_window={300:0,900:0,3600:0}; self.post_spill_python_state_sizes=[]; self.max_post_spill_python_state=(0,0,0,0); self.spill_migration_batches_by_table={"event":0,"pair":0,"ip":0,"port":0}
   self.ingested_chunks: list[str] = []
-  if any(path.exists() for path in self._state_paths()):
+  state_paths = self._state_paths()
+  # Do not let sqlite open a new primary database beside an orphan journal,
+  # WAL/SHM, or checkpoint temporary file.  SQLite may otherwise consume or
+  # alter that evidence before compatibility checks can quarantine it.
+  if not self.path.exists() and any(path.exists() for path in state_paths if path != self.path):
+   self._quarantine_stale_state()
+  elif any(path.exists() for path in state_paths):
    if self._resume_if_compatible(): return
    self._quarantine_stale_state()
   self.connection=sqlite3.connect(self.path)
@@ -102,7 +108,7 @@ class SQLiteContextAggregator:
  def require_complete_ledger(self, expected: dict[str, tuple[str, int, int]]) -> None:
   self.validate_ingestion_ledger(expected)
   if set(self.ingested_chunks) != set(expected):
-   raise ValueError("all 96 expected DITL chunks must be committed before aggregation")
+   raise ValueError("all expected DITL chunk caches must be committed before aggregation")
  def _write_checkpoint(self, ingested:list[str])->None:
   temporary=self.checkpoint_path.with_suffix(".tmp")
   temporary.write_text(json.dumps({"identity":self.identity,"ingested":ingested},sort_keys=True),encoding="utf-8")
@@ -118,10 +124,17 @@ class SQLiteContextAggregator:
    for r in targets.itertuples(index=False):
     k=FlowKey.from_packet(str(r.src_ip),int(r.src_port),str(r.dst_ip),int(r.dst_port),int(r.protocol)); f=None if pd.isna(r.tcp_flags_raw) else int(r.tcp_flags_raw)
     yield float(r.timestamp),k.endpoint_a.ip,k.endpoint_a.port,k.endpoint_b.ip,k.endpoint_b.port,k.protocol,str(r.src_ip),int(r.src_port),str(r.dst_ip),int(r.dst_port),int(r.captured_frame_length),int(r.original_frame_length),int(r.ip_total_length),int(r.transport_payload_length),f
-  self._insert("INSERT INTO o VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",obs()); self._insert("INSERT INTO syn VALUES(?,?,?,?)",((float(r.timestamp),str(r.src_ip),str(r.dst_ip),int(r.dst_port)) for r in syns.itertuples(index=False)))
-  if chunk_id is not None:
-   self.connection.execute("INSERT INTO ingestion_ledger VALUES(?,?,?,?)",(chunk_id,chunk_identity or "",len(targets),len(syns)))
-  self.connection.commit()
+  try:
+   self._insert("INSERT INTO o VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",obs()); self._insert("INSERT INTO syn VALUES(?,?,?,?)",((float(r.timestamp),str(r.src_ip),str(r.dst_ip),int(r.dst_port)) for r in syns.itertuples(index=False)))
+   if chunk_id is not None:
+    self.connection.execute("INSERT INTO ingestion_ledger VALUES(?,?,?,?)",(chunk_id,chunk_identity or "",len(targets),len(syns)))
+   self.connection.commit()
+  except BaseException:
+   # The ledger and its observations are one SQLite transaction.  A caught
+   # failure is rolled back immediately; a SIGKILL before commit likewise
+   # leaves neither durable once SQLite recovers the journal.
+   self.connection.rollback()
+   raise
   if chunk_id is not None:
    self.ingested_chunks.append(chunk_id); self._write_checkpoint(self.ingested_chunks)
  def compute(self)->None:

@@ -117,6 +117,197 @@ def test_compute_rebuilds_partial_derived_tables_without_reingestion(tmp_path):
     resumed.close(delete=True)
 
 
+def _ledger_expectation(
+    *, identity: str = "digest", target_rows: int = 1, source_rows: int = 0,
+) -> dict[str, tuple[str, int, int]]:
+    return {"chunk": (identity, target_rows, source_rows)}
+
+
+def _committed_aggregator(tmp_path, *, identity: dict[str, object] | None = None):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    path = tmp_path / "aggregation.sqlite3"
+    aggregator = SQLiteContextAggregator(path, _cohort(), identity=identity or {"run": "one"})
+    aggregator.ingest_frames(
+        pd.DataFrame([_target(100.0)]), pd.DataFrame(),
+        chunk_id="chunk", chunk_identity="digest",
+    )
+    return aggregator
+
+
+@pytest.mark.parametrize(
+    ("expected", "reason"),
+    [
+        (_ledger_expectation(identity="other"), "metadata"),
+        (_ledger_expectation(target_rows=2), "target rows"),
+        (_ledger_expectation(source_rows=1), "source rows"),
+        ({"different": ("digest", 1, 0)}, "unknown chunk"),
+    ],
+)
+def test_incompatible_ledger_is_rejected_before_it_can_be_reused(tmp_path, expected, reason):
+    aggregator = _committed_aggregator(tmp_path)
+
+    with pytest.raises(ValueError, match="ledger"):
+        aggregator.validate_ingestion_ledger(expected)
+
+    aggregator.quarantine()
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+    rebuilt = SQLiteContextAggregator(
+        tmp_path / "aggregation.sqlite3", _cohort(), identity={"run": "one"},
+    )
+    assert rebuilt.ingested_chunks == [], reason
+    assert (tmp_path / "aggregation.sqlite3.stale.1").exists()
+    rebuilt.close(delete=True)
+
+
+def test_incomplete_ledger_cannot_start_compute(tmp_path):
+    aggregator = _committed_aggregator(tmp_path)
+
+    with pytest.raises(ValueError, match="all expected DITL chunk caches"):
+        aggregator.require_complete_ledger({
+            **_ledger_expectation(),
+            "missing": ("other", 1, 0),
+        })
+    aggregator.close(delete=True)
+
+
+def test_identity_mismatch_quarantines_temporary_state_and_rebuilds(tmp_path):
+    first = _committed_aggregator(tmp_path, identity={"run": "one"})
+    first.close(delete=False)
+
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+    rebuilt = SQLiteContextAggregator(
+        tmp_path / "aggregation.sqlite3", _cohort(), identity={"run": "two"},
+    )
+    assert rebuilt.ingested_chunks == []
+    assert (tmp_path / "aggregation.sqlite3.stale.1").exists()
+    rebuilt.close(delete=True)
+
+
+def test_aggregation_code_identity_mismatch_quarantines_temporary_state(monkeypatch, tmp_path):
+    import mawi_global_analysis.ditl_context_sqlite as sqlite_context
+
+    monkeypatch.setattr(sqlite_context, "aggregation_code_identity", lambda: "code-one")
+    first = _committed_aggregator(tmp_path)
+    first.close(delete=False)
+    monkeypatch.setattr(sqlite_context, "aggregation_code_identity", lambda: "code-two")
+
+    rebuilt = sqlite_context.SQLiteContextAggregator(
+        tmp_path / "aggregation.sqlite3", _cohort(), identity={"run": "one"},
+    )
+    assert rebuilt.ingested_chunks == []
+    assert (tmp_path / "aggregation.sqlite3.stale.1").exists()
+    rebuilt.close(delete=True)
+
+
+def test_corrupt_database_is_quarantined_before_rebuild(tmp_path):
+    path = tmp_path / "aggregation.sqlite3"
+    path.write_bytes(b"not a sqlite database")
+
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+    rebuilt = SQLiteContextAggregator(path, _cohort(), identity={"run": "one"})
+    assert rebuilt.ingested_chunks == []
+    assert (tmp_path / "aggregation.sqlite3.stale.1").read_bytes() == b"not a sqlite database"
+    rebuilt.close(delete=True)
+
+
+@pytest.mark.parametrize("suffix", ["-journal", "-wal", "-shm", ".checkpoint.tmp"])
+def test_orphaned_temporary_state_is_quarantined_before_database_rebuild(tmp_path, suffix):
+    path = tmp_path / "aggregation.sqlite3"
+    orphan = (
+        path.with_suffix(".checkpoint.tmp")
+        if suffix == ".checkpoint.tmp"
+        else path.with_name(f"{path.name}{suffix}")
+    )
+    orphan.write_bytes(b"orphan")
+
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+    rebuilt = SQLiteContextAggregator(path, _cohort(), identity={"run": "one"})
+    assert rebuilt.ingested_chunks == []
+    assert orphan.with_name(f"{orphan.name}.stale.1").read_bytes() == b"orphan"
+    rebuilt.close(delete=True)
+
+
+def test_quarantine_uses_next_unique_diagnostic_suffix(tmp_path):
+    path = tmp_path / "aggregation.sqlite3"
+    path.write_bytes(b"not a sqlite database")
+    (tmp_path / "aggregation.sqlite3.stale.1").write_bytes(b"older evidence")
+
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+    rebuilt = SQLiteContextAggregator(path, _cohort(), identity={"run": "one"})
+    assert (tmp_path / "aggregation.sqlite3.stale.1").read_bytes() == b"older evidence"
+    assert (tmp_path / "aggregation.sqlite3.stale.2").read_bytes() == b"not a sqlite database"
+    rebuilt.close(delete=True)
+
+
+def test_sqlite_ledger_overrides_stale_external_checkpoint(tmp_path):
+    first = _committed_aggregator(tmp_path)
+    path = first.path
+    first.close(delete=False)
+    path.with_suffix(".checkpoint.json").write_text(
+        '{"identity": "wrong", "ingested": []}', encoding="utf-8",
+    )
+
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+    resumed = SQLiteContextAggregator(path, _cohort(), identity={"run": "one"})
+    assert resumed.ingested_chunks == ["chunk"]
+    assert resumed.connection.execute("SELECT COUNT(*) FROM ingestion_ledger").fetchone() == (1,)
+    resumed.close(delete=True)
+
+
+def test_ingestion_before_commit_rolls_back_rows_and_ledger(tmp_path, monkeypatch):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    path = tmp_path / "aggregation.sqlite3"
+    first = SQLiteContextAggregator(path, _cohort(), identity={"run": "one"})
+    original_insert = first._insert
+
+    def fail_after_observation_inserts(sql, rows):
+        original_insert(sql, rows)
+        if "INSERT INTO syn" in sql:
+            raise RuntimeError("before commit")
+
+    monkeypatch.setattr(first, "_insert", fail_after_observation_inserts)
+    with pytest.raises(RuntimeError, match="before commit"):
+        first.ingest_frames(
+            pd.DataFrame([_target(100.0)]), pd.DataFrame(),
+            chunk_id="chunk", chunk_identity="digest",
+        )
+    assert first.connection.execute("SELECT COUNT(*) FROM o").fetchone() == (0,)
+    assert first.connection.execute("SELECT COUNT(*) FROM ingestion_ledger").fetchone() == (0,)
+    first.close(delete=False)
+
+    resumed = SQLiteContextAggregator(path, _cohort(), identity={"run": "one"})
+    assert resumed.ingested_chunks == []
+    assert resumed.connection.execute("SELECT COUNT(*) FROM o").fetchone() == (0,)
+    assert resumed.connection.execute("SELECT COUNT(*) FROM ingestion_ledger").fetchone() == (0,)
+    resumed.ingest_frames(
+        pd.DataFrame([_target(100.0)]), pd.DataFrame(),
+        chunk_id="chunk", chunk_identity="digest",
+    )
+    assert resumed.ingested_chunks == ["chunk"]
+    resumed.close(delete=True)
+
+
+def test_ingestion_after_commit_before_checkpoint_reuses_ledger(tmp_path, monkeypatch):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    path = tmp_path / "aggregation.sqlite3"
+    first = SQLiteContextAggregator(path, _cohort(), identity={"run": "one"})
+    monkeypatch.setattr(first, "_write_checkpoint", lambda _: (_ for _ in ()).throw(RuntimeError("after commit")))
+    with pytest.raises(RuntimeError, match="after commit"):
+        first.ingest_frames(
+            pd.DataFrame([_target(100.0)]), pd.DataFrame(),
+            chunk_id="chunk", chunk_identity="digest",
+        )
+    first.close(delete=False)
+
+    resumed = SQLiteContextAggregator(path, _cohort(), identity={"run": "one"})
+    assert resumed.ingested_chunks == ["chunk"]
+    assert resumed.connection.execute("SELECT COUNT(*) FROM o").fetchone() == (1,)
+    resumed.close(delete=True)
+
+
 def test_prolific_source_uses_spill_and_preserves_inclusive_windows(tmp_path):
     from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
 

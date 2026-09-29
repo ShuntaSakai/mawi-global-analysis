@@ -154,7 +154,16 @@ def _validate_published_streaming_run(run_dir: Path, manifest: dict[str, Any]) -
             if tuple(reader.fieldnames or ()) != columns or sum(1 for _ in reader) != record.get("row_count"):
                 raise ContextRunConflictError("existing context run has invalid artifacts")
         paths[name] = path
-    _validate_staged_context_artifacts(paths["one_packet_cohort"], paths["one_packet_context"], paths["one_packet_source_context"])
+    try:
+        _validate_staged_context_artifacts(
+            paths["one_packet_cohort"],
+            paths["one_packet_context"],
+            paths["one_packet_source_context"],
+        )
+    except (OSError, ValueError) as error:
+        raise ContextRunConflictError(
+            "existing context run has invalid artifacts"
+        ) from error
 
 
 def run_one_packet_context_analysis(
