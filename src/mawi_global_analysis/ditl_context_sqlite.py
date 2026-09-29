@@ -11,6 +11,7 @@ import pandas as pd
 from mawi_global_analysis.flow import FlowKey
 from mawi_global_analysis.one_packet_context import ONE_PACKET_CONTEXT_COLUMNS, ONE_PACKET_SOURCE_CONTEXT_COLUMNS, _tcp_flags_text
 from mawi_global_analysis.hashing import stable_json_hash
+from mawi_global_analysis.hashing import sha256_file
 
 
 SQLITE_SCHEMA_VERSION = "ditl-context-sqlite-v1"
@@ -19,6 +20,15 @@ MINIMUM_FREE_BYTES = 2 * 1024**3
 
 class InsufficientAggregationDiskSpace(ValueError):
     """Raised before ingestion when controlled spool space is insufficient."""
+
+
+def aggregation_code_identity() -> str:
+    """Identity temporary state by every source that changes final values."""
+    module = Path(__file__)
+    return stable_json_hash({
+        "sqlite_aggregation": sha256_file(module),
+        "streaming_publication": sha256_file(module.with_name("one_packet_context_run.py")),
+    })
 
 
 def require_aggregation_disk_space(directory: Path, metadata: list[dict]) -> int:
@@ -38,7 +48,7 @@ def require_aggregation_disk_space(directory: Path, metadata: list[dict]) -> int
 class SQLiteContextAggregator:
  def __init__(self,path:Path,cohort:pd.DataFrame,*,batch_size:int=10_000,identity:dict|None=None)->None:
   self.path,self.batch_size=Path(path),batch_size; self.checkpoint_path=self.path.with_suffix(".checkpoint.json")
-  self.identity={"schema_version":SQLITE_SCHEMA_VERSION,**(identity or {})}
+  self.identity={"schema_version":SQLITE_SCHEMA_VERSION,"aggregation_code_identity":aggregation_code_identity(),**(identity or {})}
   self.ingested_chunks: list[str] = []
   if self.path.exists() or self.checkpoint_path.exists():
    if self._resume_if_compatible(): return
@@ -72,12 +82,13 @@ class SQLiteContextAggregator:
     while destination.exists():
      suffix += 1; destination = value.with_name(f"{value.name}.stale.{suffix}")
     value.replace(destination)
- def validate_ingestion_ledger(self, expected: dict[str, str]) -> None:
+ def validate_ingestion_ledger(self, expected: dict[str, tuple[str, int, int]]) -> None:
   """Reject any committed record not matching current durable cache metadata."""
-  rows=list(self.connection.execute("SELECT chunk_id,metadata_identity FROM ingestion_ledger"))
+  rows=list(self.connection.execute("SELECT chunk_id,metadata_identity,target_rows,source_rows FROM ingestion_ledger"))
   if len({row[0] for row in rows}) != len(rows): raise ValueError("duplicate SQLite ingestion ledger entries")
-  for chunk_id, identity in rows:
-   if expected.get(chunk_id) != identity: raise ValueError("SQLite ingestion ledger does not match durable chunk metadata")
+  for chunk_id, identity, target_rows, source_rows in rows:
+   if expected.get(chunk_id) != (identity, target_rows, source_rows):
+    raise ValueError("SQLite ingestion ledger does not match durable chunk metadata")
  def _write_checkpoint(self, ingested:list[str])->None:
   temporary=self.checkpoint_path.with_suffix(".tmp")
   temporary.write_text(json.dumps({"identity":self.identity,"ingested":ingested},sort_keys=True),encoding="utf-8")
@@ -100,7 +111,17 @@ class SQLiteContextAggregator:
   if chunk_id is not None:
    self.ingested_chunks.append(chunk_id); self._write_checkpoint(self.ingested_chunks)
  def compute(self)->None:
-  c=self.connection;c.execute("CREATE INDEX ok ON o(a,ap,b,bp,p,ts)");c.execute("CREATE INDEX sk ON syn(src,ts)")
+  c=self.connection
+  c.execute("BEGIN IMMEDIATE")
+  # Only raw observations and ingestion_ledger are restart-durable.  Derived
+  # tables are discarded before every attempt, so a SIGKILL in compute cannot
+  # make an otherwise complete ingestion database unusable.
+  for table in ("s","w5","w15","w1","t","m"):
+   c.execute(f"DROP TABLE IF EXISTS {table}")
+  for index in ("ok","sk","mk"):
+   c.execute(f"DROP INDEX IF EXISTS {index}")
+  c.execute("DROP TABLE IF EXISTS day")
+  c.execute("CREATE INDEX ok ON o(a,ap,b,bp,p,ts)");c.execute("CREATE INDEX sk ON syn(src,ts)")
   c.execute("CREATE TABLE m AS SELECT c.id,o.* FROM cohort c JOIN o ON c.a=o.a AND c.ap=o.ap AND c.b=o.b AND c.bp=o.bp AND c.p=o.p AND c.ts=o.ts")
   bad=c.execute("SELECT c.source_flow_id,count(m.id) FROM cohort c LEFT JOIN m ON c.id=m.id GROUP BY c.id HAVING count(m.id)!=1 LIMIT 1").fetchone()
   if bad:raise ValueError(f"{'missing' if bad[1]==0 else 'ambiguous'} target matches for source_flow_id={bad[0]}")

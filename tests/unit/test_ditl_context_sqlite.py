@@ -75,3 +75,17 @@ def test_committed_ledger_survives_missing_external_checkpoint(tmp_path):
     resumed = SQLiteContextAggregator(path, _cohort(), identity={"cohort_identity": "cohort"})
     assert resumed.ingested_chunks == ["chunk"]
     resumed.close(delete=True)
+
+
+def test_compute_rebuilds_partial_derived_tables_without_reingestion(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    path = tmp_path / "aggregation.sqlite3"
+    first = SQLiteContextAggregator(path, _cohort(), identity={"cohort_identity": "cohort"})
+    first.ingest_frames(pd.DataFrame([_target(100.0)]), pd.DataFrame(), chunk_id="chunk", chunk_identity="digest")
+    first.connection.execute("CREATE TABLE m (partial INTEGER)")
+    first.connection.commit(); first.close(delete=False)
+    resumed = SQLiteContextAggregator(path, _cohort(), identity={"cohort_identity": "cohort"})
+    resumed.compute()
+    assert len(list(resumed.iter_context_rows())) == 1
+    resumed.close(delete=True)

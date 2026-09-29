@@ -122,7 +122,11 @@ def run_ditl_one_packet_context(
         "chunk_metadata_identities": metadata_identities,
     })
     aggregator.validate_ingestion_ledger({
-        chunk_id: stable_json_hash(validated_by_id[chunk_id]) for chunk_id in chunk_ids
+        chunk_id: (
+            stable_json_hash(validated_by_id[chunk_id]),
+            validated_by_id[chunk_id]["target_observation_row_count"],
+            validated_by_id[chunk_id]["source_syn_observation_row_count"],
+        ) for chunk_id in chunk_ids
     })
     try:
         for index, chunk_id in enumerate(chunk_ids, start=1):

@@ -46,7 +46,7 @@ def test_orchestrator_processes_target_checkpoint_before_other_slots(monkeypatch
         (directory / "chunk_metadata.json").write_text("{}")
     def load_cache(root, chunk_id, cohort):
         seen.append(chunk_id)
-        return SimpleNamespace(metadata={"source": {"sha256": digest, "size_bytes": 6}, "status": "success", "artifacts": {}}, target_packets=None, source_syn_packets=None)
+        return SimpleNamespace(metadata={"source": {"sha256": digest, "size_bytes": 6}, "status": "success", "artifacts": {}, "target_observation_row_count": 0, "source_syn_observation_row_count": 0}, target_packets=None, source_syn_packets=None)
     monkeypatch.setattr(orchestration, "load_completed_chunk_observations", load_cache)
     ingested: list[str] = []
     class FakeAggregator:
