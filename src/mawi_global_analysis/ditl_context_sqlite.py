@@ -885,5 +885,10 @@ class SQLiteContextAggregator:
 
     def close(self, *, delete: bool) -> None:
         self.connection.close()
-        if delete and self.path.exists():
-            self.path.unlink()
+        if delete:
+            # This path is called only after successful final publication.
+            # Keep the complete state set after failure, but do not leave a
+            # cohort-scale database/checkpoint beside an already-final run.
+            for state_path in self._state_paths():
+                if state_path.exists():
+                    state_path.unlink()

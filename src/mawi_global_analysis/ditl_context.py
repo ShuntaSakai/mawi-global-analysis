@@ -147,6 +147,7 @@ def run_ditl_one_packet_context(
         ) for chunk_id in chunk_ids
     }
     aggregator = SQLiteContextAggregator(database_path, cohort, identity=aggregation_identity)
+    publication_succeeded = False
     try:
         aggregator.validate_ingestion_ledger(expected_ledger)
     except ValueError:
@@ -173,8 +174,12 @@ def run_ditl_one_packet_context(
             dataset_id, source_run_name, [validated_by_id[chunk_id] for chunk_id in chunk_ids],
             target_chunk_id, context_run_name, cohort, aggregator, source_manifest, root=root,
         )
+        publication_succeeded = True
     finally:
-        aggregator.close(delete=False)
+        # Aggregation state is derived from immutable caches.  Preserve it on
+        # any failure for diagnosis/restart, but release all of it after the
+        # final run has been durably published and streaming-validated.
+        aggregator.close(delete=publication_succeeded)
     if target_path.exists() and target_path.parent == spool_root.resolve() and ownership_path(target_path).exists():
         # An owned target within this spool is deleted only after final loading;
         # a corrupt ownership/cache proof is a failure, not a reason to hide it.

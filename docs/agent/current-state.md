@@ -51,12 +51,17 @@ provenance while retaining legacy full-capture context runs.
 
 Phase 5B adds a standard-library, sequential DITL downloader and an explicit
 DITL context orchestrator. It requires an already-successful source run rather
-than invoking the source pipeline. A downloader-owned raw chunk is deleted only
-after its durable Phase 5A cache has been reloaded and fully validated; source
-target deletion additionally waits for final context publication and loader
-validation. Human-provided and outside-spool files are never automatically
-deleted. This is implementation verification support only; no real MAWI run is
-recorded.
+than invoking the source pipeline. Aggregation uses a metadata-only,
+conservative SQLite disk preflight and a committed SQLite ingestion ledger for
+restart safety; incompatible temporary state is quarantined while durable
+caches remain immutable. Final CSV artifacts are staged, fsynced, and validated
+by bounded streaming checks of schema, checksums, row counts, linkage, and
+cohort ordering before publication. A downloader-owned raw chunk is deleted
+only after its durable Phase 5A cache has been reloaded and fully validated;
+source target deletion additionally waits for successful final context
+publication and streaming validation. Human-provided and outside-spool files
+are never automatically deleted. This is implementation verification support
+only; no real MAWI run is recorded.
 
 The primary notebooks currently present are legacy reproduction, scan-threshold
 exploration, several main prefix-comparison variants, prefix deep-dive,

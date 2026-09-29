@@ -134,7 +134,7 @@ def test_owned_target_raw_is_deleted_only_after_successful_publication(
             events.append("compute")
 
         def close(self, **kwargs):
-            return None
+            events.append(f"close:{kwargs['delete']}")
 
     monkeypatch.setattr(orchestration, "SQLiteContextAggregator", FakeAggregator)
 
@@ -159,7 +159,7 @@ def test_owned_target_raw_is_deleted_only_after_successful_publication(
             "dataset", "source", "20260408", target_chunk_id, target,
             "https://example.test/{chunk_id}.pcap.gz", "context", root=tmp_path,
         )
-        assert events[-2:] == ["publish", "delete"]
+        assert events[-3:] == ["publish", "close:True", "delete"]
         assert not target.exists()
     else:
         with pytest.raises(RuntimeError, match="publication failed"):
@@ -167,6 +167,7 @@ def test_owned_target_raw_is_deleted_only_after_successful_publication(
                 "dataset", "source", "20260408", target_chunk_id, target,
                 "https://example.test/{chunk_id}.pcap.gz", "context", root=tmp_path,
             )
+        assert events[-1] == "close:False"
         assert "delete" not in events
         assert target.exists()
 

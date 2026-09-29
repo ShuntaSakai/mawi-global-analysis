@@ -172,10 +172,17 @@ uv run python run_ditl_one_packet_context.py \
 The durable Phase 5A cache is the resume checkpoint. A completed cache skips
 download; a completed owned raw left after a crash is reused and removed only
 after cache validation. `.part` files are never parsed as captures. The target
-chunk remains until final aggregation, manifest publication, and final loader
-validation. A human-provided target or any file outside the downloader spool
-is left intact. Final provenance remains usable after raw deletion. This
-runbook does not claim a successful real-MAWI execution.
+chunk remains until final aggregation, staged streaming artifact validation,
+and success-manifest publication. That validation checks CSV headers, hashes,
+row counts, cohort linkage, and deterministic ordering without loading a full
+artifact into pandas. Before SQLite ingestion, the workflow logs a conservative
+metadata-only disk estimate (raw/index/derived/spill/temp/staging components)
+and fails if free space is insufficient. Interrupted aggregation state is
+quarantined or resumed only from its committed SQLite ledger; successful final
+publication releases its derived SQLite state. A human-provided target or any
+file outside the downloader spool is left intact. Final provenance remains
+usable after raw deletion. This runbook does not claim a successful real-MAWI
+execution.
 
 config validationはpipelineによるconfig load時に行われる。実データ取得もartifact書込みもしない計画確認には、以下のdry-runを使える。
 

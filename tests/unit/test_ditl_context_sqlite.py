@@ -219,6 +219,20 @@ def test_committed_ledger_survives_missing_external_checkpoint(tmp_path):
     resumed.close(delete=True)
 
 
+def test_close_delete_removes_database_checkpoint_and_sqlite_sidecars(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    path = tmp_path / "aggregation.sqlite3"
+    aggregator = SQLiteContextAggregator(path, _cohort())
+    sidecars = aggregator._state_paths()
+    for sidecar in sidecars[1:]:
+        sidecar.write_text("derived temporary state")
+
+    aggregator.close(delete=True)
+
+    assert all(not sidecar.exists() for sidecar in sidecars)
+
+
 def test_compute_rebuilds_partial_derived_tables_without_reingestion(tmp_path):
     from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
 
