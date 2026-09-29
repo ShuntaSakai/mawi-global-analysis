@@ -82,6 +82,10 @@ class SQLiteContextAggregator:
     while destination.exists():
      suffix += 1; destination = value.with_name(f"{value.name}.stale.{suffix}")
     value.replace(destination)
+ def quarantine(self) -> None:
+  """Close and preserve incompatible temporary state for diagnosis."""
+  self.connection.close()
+  self._quarantine_stale_state()
  def validate_ingestion_ledger(self, expected: dict[str, tuple[str, int, int]]) -> None:
   """Reject any committed record not matching current durable cache metadata."""
   rows=list(self.connection.execute("SELECT chunk_id,metadata_identity,target_rows,source_rows FROM ingestion_ledger"))
@@ -89,6 +93,10 @@ class SQLiteContextAggregator:
   for chunk_id, identity, target_rows, source_rows in rows:
    if expected.get(chunk_id) != (identity, target_rows, source_rows):
     raise ValueError("SQLite ingestion ledger does not match durable chunk metadata")
+ def require_complete_ledger(self, expected: dict[str, tuple[str, int, int]]) -> None:
+  self.validate_ingestion_ledger(expected)
+  if set(self.ingested_chunks) != set(expected):
+   raise ValueError("all 96 expected DITL chunks must be committed before aggregation")
  def _write_checkpoint(self, ingested:list[str])->None:
   temporary=self.checkpoint_path.with_suffix(".tmp")
   temporary.write_text(json.dumps({"identity":self.identity,"ingested":ingested},sort_keys=True),encoding="utf-8")

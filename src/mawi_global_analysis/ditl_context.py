@@ -117,17 +117,24 @@ def run_ditl_one_packet_context(
     LOGGER.info("SQLite disk preflight reserved %d bytes", required_bytes)
     database_path = spool_root / ".aggregation.sqlite3"
     metadata_identities = [stable_json_hash(validated_by_id[chunk_id]) for chunk_id in chunk_ids]
-    aggregator = SQLiteContextAggregator(database_path, cohort, identity={
+    aggregation_identity = {
         "cohort_identity": cohort_identity(cohort), "chunk_ids": chunk_ids,
         "chunk_metadata_identities": metadata_identities,
-    })
-    aggregator.validate_ingestion_ledger({
+    }
+    expected_ledger = {
         chunk_id: (
             stable_json_hash(validated_by_id[chunk_id]),
             validated_by_id[chunk_id]["target_observation_row_count"],
             validated_by_id[chunk_id]["source_syn_observation_row_count"],
         ) for chunk_id in chunk_ids
-    })
+    }
+    aggregator = SQLiteContextAggregator(database_path, cohort, identity=aggregation_identity)
+    try:
+        aggregator.validate_ingestion_ledger(expected_ledger)
+    except ValueError:
+        LOGGER.warning("quarantining incompatible SQLite aggregation state")
+        aggregator.quarantine()
+        aggregator = SQLiteContextAggregator(database_path, cohort, identity=aggregation_identity)
     try:
         for index, chunk_id in enumerate(chunk_ids, start=1):
             if chunk_id in aggregator.ingested_chunks:
@@ -140,6 +147,7 @@ def run_ditl_one_packet_context(
                 chunk_identity=stable_json_hash(validated_by_id[chunk_id]),
             )
             del chunk
+        aggregator.require_complete_ledger(expected_ledger)
         LOGGER.info("building indexes and computing tuple/source context")
         aggregator.compute()
         LOGGER.info("writing final artifacts")
