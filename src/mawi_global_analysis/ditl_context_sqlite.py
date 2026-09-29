@@ -50,7 +50,7 @@ class SQLiteContextAggregator:
   self.path,self.batch_size=Path(path),batch_size; self.checkpoint_path=self.path.with_suffix(".checkpoint.json")
   self.identity={"schema_version":SQLITE_SCHEMA_VERSION,"aggregation_code_identity":aggregation_code_identity(),**(identity or {})}
   self.ingested_chunks: list[str] = []
-  if self.path.exists() or self.checkpoint_path.exists():
+  if any(path.exists() for path in self._state_paths()):
    if self._resume_if_compatible(): return
    self._quarantine_stale_state()
   self.connection=sqlite3.connect(self.path)
@@ -75,13 +75,15 @@ class SQLiteContextAggregator:
    self.connection=connection; self.ingested_chunks=[row[0] for row in connection.execute("SELECT chunk_id FROM ingestion_ledger ORDER BY rowid")]; return True
   except (OSError,json.JSONDecodeError,sqlite3.Error): return False
  def _quarantine_stale_state(self)->None:
-  for value in (self.path, Path(str(self.path)+"-journal"), Path(str(self.path)+"-wal"), Path(str(self.path)+"-shm"), self.checkpoint_path, self.checkpoint_path.with_suffix(".tmp")):
+  for value in self._state_paths():
    if value.exists():
     suffix = 1
     destination = value.with_name(f"{value.name}.stale.{suffix}")
     while destination.exists():
      suffix += 1; destination = value.with_name(f"{value.name}.stale.{suffix}")
     value.replace(destination)
+ def _state_paths(self) -> tuple[Path, ...]:
+  return (self.path, Path(str(self.path)+"-journal"), Path(str(self.path)+"-wal"), Path(str(self.path)+"-shm"), self.checkpoint_path, self.checkpoint_path.with_suffix(".tmp"))
  def quarantine(self) -> None:
   """Close and preserve incompatible temporary state for diagnosis."""
   self.connection.close()

@@ -61,7 +61,11 @@ def write_one_packet_context_chunk_run_streaming(
         "context_code_source_hash": _code_identity().get("source_hash"),
     })
     if run_dir.exists():
-        raise ContextRunConflictError("existing context run prevents streaming publication")
+        existing = _read_json(manifest_path, "context manifest") if manifest_path.exists() else {}
+        if existing.get("status") != "success" or existing.get("identity") != identity:
+            raise ContextRunConflictError("existing context run prevents streaming publication")
+        _validate_published_streaming_run(run_dir, existing)
+        return run_dir
     run_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f".{context_run_name}.staging.", dir=run_dir.parent))
     try:
@@ -97,7 +101,7 @@ def _write_rows_atomically(path: Path, columns: tuple[str, ...], rows: Any, coho
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as output:
             temporary = Path(output.name); writer = csv.DictWriter(output, fieldnames=columns); writer.writeheader()
-            linkage = cohort.loc[:, ["source_flow_id", "target_timestamp"]].itertuples(index=False, name=None)
+            linkage = iter(zip(cohort["source_flow_id"].array, cohort["target_timestamp"].array, strict=True))
             for row in rows:
                 if tuple(row) != columns: raise ValueError("streaming context schema mismatch")
                 if (row["source_flow_id"], row["target_timestamp"]) != next(linkage, None):
@@ -115,6 +119,9 @@ def _stream_artifact(path: Path, row_count: int, published_path: Path) -> dict[s
 
 
 def _validate_staged_context_artifacts(cohort: Path, context: Path, source: Path) -> None:
+    with cohort.open(newline="", encoding="utf-8") as cohort_file:
+        if tuple(csv.DictReader(cohort_file).fieldnames or ()) != ONE_PACKET_COHORT_COLUMNS:
+            raise ValueError("staged cohort schema mismatch")
     for path, columns in ((context, ONE_PACKET_CONTEXT_COLUMNS), (source, ONE_PACKET_SOURCE_CONTEXT_COLUMNS)):
         with cohort.open(newline="", encoding="utf-8") as cohort_file, path.open(newline="", encoding="utf-8") as input_file:
             cohort_reader = csv.DictReader(cohort_file)
@@ -129,6 +136,25 @@ def _fsync_directory(directory: Path) -> None:
     descriptor = os.open(directory, os.O_RDONLY)
     try: os.fsync(descriptor)
     finally: os.close(descriptor)
+
+
+def _validate_published_streaming_run(run_dir: Path, manifest: dict[str, Any]) -> None:
+    """Boundedly validate an existing published run after a post-rename crash."""
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict): raise ContextRunConflictError("existing context run has invalid artifacts")
+    names = (("one_packet_cohort", ONE_PACKET_COHORT_COLUMNS), ("one_packet_context", ONE_PACKET_CONTEXT_COLUMNS), ("one_packet_source_context", ONE_PACKET_SOURCE_CONTEXT_COLUMNS))
+    paths: dict[str, Path] = {}
+    for name, columns in names:
+        record = artifacts.get(name)
+        if not isinstance(record, dict) or not isinstance(record.get("path"), str): raise ContextRunConflictError("existing context run has invalid artifacts")
+        path = Path(record["path"])
+        if path.parent != run_dir or not path.is_file() or record.get("sha256") != sha256_file(path): raise ContextRunConflictError("existing context run has invalid artifacts")
+        with path.open(newline="", encoding="utf-8") as input_file:
+            reader = csv.DictReader(input_file)
+            if tuple(reader.fieldnames or ()) != columns or sum(1 for _ in reader) != record.get("row_count"):
+                raise ContextRunConflictError("existing context run has invalid artifacts")
+        paths[name] = path
+    _validate_staged_context_artifacts(paths["one_packet_cohort"], paths["one_packet_context"], paths["one_packet_source_context"])
 
 
 def run_one_packet_context_analysis(
