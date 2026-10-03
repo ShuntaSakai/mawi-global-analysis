@@ -356,3 +356,38 @@ def test_chunk_ingestion_order_and_spill_match_reference(tmp_path) -> None:
     _assert_public_equal(expected_source, nonspill_source)
     _assert_public_equal(expected_context, spill_context)
     _assert_public_equal(expected_source, spill_source)
+
+
+def test_sparse_targets_with_day_history_and_gaps_match_reference_under_spill(tmp_path):
+    timestamps = (10_000.0, 30_000.0)
+    sources = ("198.51.100.1", "198.51.100.2")
+    cohort = pd.DataFrame([
+        _cohort_row(index, ts, src_ip=src)
+        for index, (src, ts) in enumerate(
+            ((src, ts) for src in sources for ts in timestamps), start=1,
+        )
+    ])
+    targets = pd.DataFrame([_packet(ts, src_ip=src) for src in sources for ts in timestamps])
+    syns = pd.DataFrame([
+        _syn(ts, f"192.0.2.{index % 20 + 2}", 80 + index % 3, src_ip=src)
+        for src in sources
+        for index, ts in enumerate((
+            0.0, 1.0, 2.0, 15_000.0, 15_001.0,
+            *[t + offset for t in timestamps for offset in (-3600, -900, -300, 0, 300, 900, 3600)],
+        ))
+    ])
+    expected_context, expected_source = _reference(cohort, targets, syns)
+    memory, memory_context, memory_source = _sqlite(
+        tmp_path / "memory", cohort, [(targets, syns)], active_state_limit=100,
+    )
+    spill, spill_context, spill_source = _sqlite(
+        tmp_path / "spill", cohort, [(targets, syns)], active_state_limit=1,
+    )
+    assert not memory.spill_used
+    assert spill.spill_used
+    _assert_public_equal(expected_context, memory_context)
+    _assert_public_equal(expected_source, memory_source)
+    _assert_public_equal(expected_context, spill_context)
+    _assert_public_equal(expected_source, spill_source)
+    for table in ("spill_event", "spill_pair", "spill_ip", "spill_port"):
+        assert spill.connection.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)

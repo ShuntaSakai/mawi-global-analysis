@@ -51,7 +51,7 @@ def _syn(timestamp: float, dst: str, port: int, source: str = "198.51.100.1") ->
 def _disk_metadata(
     tmp_path: Path,
     *,
-    chunk_id: str = "chunk",
+    chunk_id: str = "202604080000",
     target_rows: int = 10,
     source_rows: int = 5,
     target_bytes: int = 1_000,
@@ -128,10 +128,11 @@ def test_disk_estimate_increases_with_observation_and_cohort_evidence(
 
 def test_disk_estimate_handles_96_metadata_records_without_loading_frames(tmp_path):
     from mawi_global_analysis.ditl_context_sqlite import estimate_aggregation_disk_space
+    from mawi_global_analysis.ditl_chunks import expected_chunk_ids
 
     metadata = [
-        _disk_metadata(tmp_path / str(index), chunk_id=str(index), target_rows=1, source_rows=1)
-        for index in range(96)
+        _disk_metadata(tmp_path / str(index), chunk_id=chunk_id, target_rows=1, source_rows=1)
+        for index, chunk_id in enumerate(expected_chunk_ids("20260408"))
     ]
     estimate = estimate_aggregation_disk_space(metadata, cohort_row_count=96, available_bytes=10**15)
     assert estimate.cache_observation_bytes == 96 * 1_500
@@ -728,3 +729,217 @@ def test_compute_rebuilds_populated_spill_state_without_reingestion(tmp_path):
     assert resumed.connection.execute(
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'spill_expiry'"
     ).fetchone() == ("spill_expiry",)
+
+
+SPILL_TABLES = ("spill_event", "spill_pair", "spill_ip", "spill_port")
+
+
+def _rolling_metadata(counts):
+    from mawi_global_analysis.ditl_chunks import expected_chunk_ids
+
+    return [
+        {"chunk_id": chunk_id, "source_syn_observation_row_count": count,
+         "target_observation_row_count": 0, "artifacts": {}}
+        for chunk_id, count in zip(expected_chunk_ids("20260408"), counts, strict=True)
+    ]
+
+
+@pytest.mark.parametrize("span", [2, 3, 9])
+@pytest.mark.parametrize("start", [0, 40, "end"])
+def test_rolling_source_bound_finds_uneven_peak_and_boundaries(span, start):
+    from mawi_global_analysis.ditl_context_sqlite import max_rolling_source_syn_rows
+
+    counts = [1] * 96
+    start = 96 - span if start == "end" else start
+    peak = list(range(100, 100 + span))
+    counts[start:start + span] = peak
+    assert max_rolling_source_syn_rows(_rolling_metadata(counts), span) == sum(peak)
+    assert sum(peak) < sum(counts)
+
+
+def test_spill_estimate_uses_peak_not_full_day_and_rebudgets_journal(monkeypatch):
+    import mawi_global_analysis.ditl_context_sqlite as module
+
+    counts = [0] * 96
+    counts[40:49] = [10, 30, 20, 80, 5, 70, 15, 40, 60]
+    metadata = _rolling_metadata(counts)
+    # Metadata helpers must neither open observation files nor load frames.
+    monkeypatch.setattr(pd, "read_csv", lambda *a, **k: pytest.fail("loaded observations"))
+    monkeypatch.setattr(Path, "open", lambda *a, **k: pytest.fail("opened observations"))
+    peak = sum(counts)
+    assert module.SPILL_SOURCE_ROW_BYTES == 512
+    assert module.SQLITE_INDEX_MULTIPLIER == 1.0
+    assert module.SQLITE_TEMP_JOURNAL_MULTIPLIER == 0.75
+    assert module.SAFETY_MARGIN_FRACTION == 0.25
+    assert module.estimate_spill_headroom_bytes(iter(metadata)) == peak * 512
+    counts[0] = 100
+    counts[-1] = 100
+    changed = _rolling_metadata(counts)
+    assert module.estimate_spill_headroom_bytes(changed) == peak * 512
+    estimate = module.estimate_aggregation_disk_space(iter(changed), cohort_row_count=10, available_bytes=10**15)
+    assert estimate.spill_headroom_bytes == peak * 512 < sum(counts) * 512
+    assert estimate.sqlite_temp_journal_bytes == int(0.75 * (
+        estimate.sqlite_raw_bytes + estimate.sqlite_index_bytes + estimate.derived_bytes + peak * 512
+    ))
+    counts[44] += 1
+    assert module.estimate_spill_headroom_bytes(_rolling_metadata(counts)) == (peak + 1) * 512
+
+
+def test_zero_rolling_source_rows():
+    from mawi_global_analysis.ditl_context_sqlite import max_rolling_source_syn_rows, estimate_spill_headroom_bytes
+
+    metadata = _rolling_metadata([0] * 96)
+    assert all(max_rolling_source_syn_rows(metadata, span) == 0 for span in (2, 3, 9))
+    assert estimate_spill_headroom_bytes(metadata) == 0
+
+
+@pytest.mark.parametrize("bad_id", [None, 202604080000, "chunk", "202602300000", "202604080001"])
+def test_rolling_rejects_malformed_chunk_ids(bad_id):
+    from mawi_global_analysis.ditl_context_sqlite import estimate_spill_headroom_bytes
+
+    metadata = _rolling_metadata([1] * 96)
+    metadata[0]["chunk_id"] = bad_id
+    with pytest.raises(ValueError):
+        estimate_spill_headroom_bytes(metadata)
+
+
+@pytest.mark.parametrize("problem", ["duplicate", "reversed", "missing", "another_day"])
+def test_rolling_rejects_ambiguous_chronology(problem):
+    from mawi_global_analysis.ditl_context_sqlite import estimate_spill_headroom_bytes
+
+    metadata = _rolling_metadata([1] * 96)
+    if problem == "duplicate":
+        metadata[1]["chunk_id"] = metadata[0]["chunk_id"]
+    elif problem == "reversed":
+        metadata.reverse()
+    elif problem == "missing":
+        del metadata[40]
+    else:
+        metadata[-1]["chunk_id"] = "202604090000"
+    with pytest.raises(ValueError):
+        estimate_spill_headroom_bytes(metadata)
+
+
+@pytest.mark.parametrize("bad_count", [-1, True, 1.5, "1", None])
+def test_rolling_rejects_malformed_source_counts(bad_count):
+    from mawi_global_analysis.ditl_context_sqlite import estimate_spill_headroom_bytes
+
+    metadata = _rolling_metadata([1] * 96)
+    metadata[0]["source_syn_observation_row_count"] = bad_count
+    with pytest.raises(ValueError, match="non-negative"):
+        estimate_spill_headroom_bytes(metadata)
+
+
+@pytest.mark.parametrize("span", [0, -1, True, 2.5])
+def test_rolling_rejects_invalid_span(span):
+    from mawi_global_analysis.ditl_context_sqlite import max_rolling_source_syn_rows
+
+    with pytest.raises(ValueError, match="positive integer"):
+        max_rolling_source_syn_rows(_rolling_metadata([1] * 96), span)
+
+
+def test_completed_source_spill_reclaimed_in_transaction_each_window(tmp_path, monkeypatch):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    sources = ("198.51.100.1", "198.51.100.2")
+    cohort = pd.DataFrame([_cohort_row(i, 0.0, src) for i, src in enumerate(sources, 1)])
+    targets = pd.DataFrame([_target(0.0, src) for src in sources])
+    syns = pd.DataFrame([
+        _syn(float(i), f"192.0.2.{i + 2}", 80 + i, src)
+        for src in sources for i in range(6)
+    ])
+    reference = SQLiteContextAggregator(tmp_path / "memory.sqlite3", cohort, active_state_limit=100)
+    reference.ingest_frames(targets, syns)
+    reference.compute()
+    spill = SQLiteContextAggregator(tmp_path / "spill.sqlite3", cohort, active_state_limit=2, batch_size=1)
+    spill.ingest_frames(targets, syns, chunk_id="fixture", chunk_identity="digest")
+    raw = {table: list(spill.connection.execute(f"SELECT * FROM {table}"))
+           for table in ("o", "syn", "ingestion_ledger")}
+    completed = []
+    original_clear = spill._clear_spill_source
+    original_add = spill._spill_add
+
+    def clear(window, src):
+        assert spill.connection.in_transaction
+        # Each source genuinely spilled, including the final source.
+        for table in SPILL_TABLES:
+            assert spill.connection.execute(f"SELECT count(*) FROM {table} WHERE window=? AND src=?", (window, src)).fetchone()[0] > 0
+        original_clear(window, src)
+        assert all(spill.connection.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,) for table in SPILL_TABLES)
+        completed.append((window, src))
+
+    def add(window, src, event, state):
+        if src == sources[1]:
+            assert (window, sources[0]) in completed
+        assert all(spill.connection.execute(f"SELECT count(*) FROM {table} WHERE src<>? OR window<>?", (src, window)).fetchone() == (0,) for table in SPILL_TABLES)
+        original_add(window, src, event, state)
+
+    monkeypatch.setattr(spill, "_clear_spill_source", clear)
+    monkeypatch.setattr(spill, "_spill_add", add)
+    spill.compute()
+    assert completed == [(w, src) for w in (300, 900, 3600) for src in sources]
+    assert list(spill.iter_source_context_rows()) == list(reference.iter_source_context_rows())
+    assert list(spill.iter_context_rows()) == list(reference.iter_context_rows())
+    assert all(spill.connection.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,) for table in SPILL_TABLES)
+    assert {table: list(spill.connection.execute(f"SELECT * FROM {table}")) for table in raw} == raw
+    reference.close(delete=True)
+    spill.close(delete=True)
+
+
+def test_spill_live_events_never_exceed_one_centered_window(tmp_path, monkeypatch):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    timestamps = (10_000.0, 30_000.0)
+    cohort = pd.DataFrame([_cohort_row(i, ts) for i, ts in enumerate(timestamps, 1)])
+    targets = pd.DataFrame([_target(ts) for ts in timestamps])
+    syns = pd.DataFrame([
+        _syn(ts, "192.0.2.2", 80) for ts in
+        (0.0, 1.0, 2.0, 15_000.0, 15_001.0, 15_002.0,
+         *[t + offset for t in timestamps for offset in (-3600, -900, -300, 0, 300, 900, 3600)])
+    ])
+    spill = SQLiteContextAggregator(tmp_path / "spill.sqlite3", cohort, active_state_limit=1)
+    spill.ingest_frames(targets, syns)
+    original_add = spill._spill_add
+
+    def add(w, src, event, state):
+        original_add(w, src, event, state)
+        low, high = spill.connection.execute("SELECT min(ts),max(ts) FROM spill_event WHERE window=? AND src=?", (w, src)).fetchone()
+        assert high - low <= 2 * w
+        assert any(t - w <= low <= high <= t + w for t in timestamps)
+
+    monkeypatch.setattr(spill, "_spill_add", add)
+    spill.compute()
+    assert spill.spill_used
+    for row in spill.iter_source_context_rows():
+        assert row["plain_syn_packet_count_5m"] == 3
+        assert row["plain_syn_packet_count_15m"] == 5
+        assert row["plain_syn_packet_count_1h"] == 7
+        assert row["plain_syn_packet_count_24h"] == len(syns)
+    spill.close(delete=True)
+
+
+def test_spill_cleanup_is_scoped_and_rollback_restores_derived_state(tmp_path):
+    from mawi_global_analysis.ditl_context_sqlite import SQLiteContextAggregator
+
+    aggregator = SQLiteContextAggregator(tmp_path / "cleanup.sqlite3", _cohort())
+    aggregator.ingest_frames(pd.DataFrame([_target(100.0)]), pd.DataFrame())
+    aggregator.compute()
+    output = list(aggregator.iter_source_context_rows())
+    # Populate multiple sources and windows to prove the helper deletes only
+    # the completed key and participates in its caller's transaction.
+    for window, source in ((300, "A"), (300, "B"), (900, "A")):
+        aggregator.connection.execute("INSERT INTO spill_event VALUES(?,?,?,?,?,?)", (window, source, 1, 0.0, "192.0.2.2", 80))
+        aggregator.connection.execute("INSERT INTO spill_pair VALUES(?,?,?,?,?)", (window, source, "192.0.2.2", 80, 1))
+        aggregator.connection.execute("INSERT INTO spill_ip VALUES(?,?,?,?)", (window, source, "192.0.2.2", 1))
+        aggregator.connection.execute("INSERT INTO spill_port VALUES(?,?,?,?)", (window, source, 80, 1))
+    aggregator.connection.commit()
+    before = {table: list(aggregator.connection.execute(f"SELECT * FROM {table}")) for table in SPILL_TABLES}
+    aggregator.connection.execute("BEGIN IMMEDIATE")
+    aggregator._clear_spill_source(300, "A")
+    for table in SPILL_TABLES:
+        assert list(aggregator.connection.execute(f"SELECT window,src FROM {table} ORDER BY window,src")) == [(300, "B"), (900, "A")]
+    assert aggregator.connection.in_transaction
+    assert list(aggregator.iter_source_context_rows()) == output
+    aggregator.connection.rollback()
+    assert {table: list(aggregator.connection.execute(f"SELECT * FROM {table}")) for table in SPILL_TABLES} == before
+    aggregator.close(delete=True)

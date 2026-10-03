@@ -6,11 +6,13 @@ import os
 import shutil
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from itertools import islice
 from collections import Counter, deque
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 import pandas as pd
+from mawi_global_analysis.ditl_chunks import validate_chunk_id
 from mawi_global_analysis.flow import FlowKey
 from mawi_global_analysis.one_packet_context import (
     ONE_PACKET_CONTEXT_COLUMNS,
@@ -34,6 +36,8 @@ SOURCE_SYN_ROW_BYTES = 128
 LEDGER_ROW_BYTES = 2_048
 DERIVED_TARGET_ROW_BYTES = 384
 SPILL_SOURCE_ROW_BYTES = 512
+# Inclusive centered windows can intersect one extra quarter-hour at endpoints.
+SOURCE_WINDOW_CHUNK_SPANS = ((300, 2), (900, 3), (3600, 9))
 COHORT_CSV_ROW_BYTES = 512
 CONTEXT_CSV_ROW_BYTES = 1_024
 SOURCE_CONTEXT_CSV_ROW_BYTES = 768
@@ -96,6 +100,74 @@ def _metadata_artifact_bytes(metadata: dict) -> int:
     return total
 
 
+def _ordered_source_syn_counts(metadata: Iterable[dict]) -> list[int]:
+    """Validate consecutive quarter-hour metadata; never silently reorder it.
+
+    Small contiguous subsets are supported for fixtures. The production caller
+    supplies the complete fixed 96-slot day plan before any SQLite ingestion.
+    """
+    counts: list[int] = []
+    previous = None
+    day = None
+    for item in metadata:
+        if not isinstance(item, dict):
+            raise ValueError("chunk metadata must be a mapping")
+        chunk_id = validate_chunk_id(item.get("chunk_id"))
+        timestamp = datetime.strptime(chunk_id, "%Y%m%d%H%M")
+        if day is None:
+            day = timestamp.date()
+        if timestamp.date() != day or (
+            previous is not None and timestamp != previous + timedelta(minutes=15)
+        ):
+            raise ValueError(
+                "chunk metadata must have unique chronological consecutive "
+                "15-minute chunk IDs within one day"
+            )
+        counts.append(_non_negative_row_count(
+            item.get("source_syn_observation_row_count"),
+            "source_syn_observation_row_count",
+        ))
+        previous = timestamp
+    return counts
+
+
+def max_rolling_source_syn_rows(metadata: Iterable[dict], chunk_span: int) -> int:
+    """Maximum total SYN rows in any ``chunk_span`` consecutive chunk slots.
+
+    Non-negative counts make shorter boundary ranges no larger than a full
+    span. If fewer chunks exist, their total is the conservative bound.
+    This uses metadata only and assumes nothing about source distribution.
+    """
+    if isinstance(chunk_span, bool) or not isinstance(chunk_span, int) or chunk_span <= 0:
+        raise ValueError("chunk_span must be a positive integer")
+    counts = _ordered_source_syn_counts(metadata)
+    rolling = maximum = 0
+    for index, count in enumerate(counts):
+        rolling += count
+        if index >= chunk_span:
+            rolling -= counts[index - chunk_span]
+        maximum = max(maximum, rolling)
+    return maximum
+
+
+def estimate_spill_headroom_bytes(metadata: Iterable[dict]) -> int:
+    """Reserve the largest live source window, including its distinct counters.
+
+    Requires observations partitioned into the fixed 15-minute DITL chunks;
+    operational IDs alone do not validate packet timestamps.
+    Source completion deletes spill state and expiration precedes insertion,
+    allowing SQLite pages to be reused across sources and window passes. One
+    source's live rows cannot exceed all sources' rows in intersecting chunks.
+    The 512 B/row coefficient includes event and pair/IP/port state plus indexes.
+    No VACUUM or source-distribution assumption is required.
+    """
+    items = list(metadata)
+    return max(
+        max_rolling_source_syn_rows(items, span)
+        for _, span in SOURCE_WINDOW_CHUNK_SPANS
+    ) * SPILL_SOURCE_ROW_BYTES
+
+
 def estimate_aggregation_disk_space(
     metadata: Iterable[dict],
     *,
@@ -110,8 +182,10 @@ def estimate_aggregation_disk_space(
     """
     cohort_rows = _non_negative_row_count(cohort_row_count, "cohort_row_count")
     available = _non_negative_row_count(available_bytes, "available_bytes")
+    items = list(metadata)
+    spill = estimate_spill_headroom_bytes(items)
     target_rows = source_rows = cache_bytes = chunk_count = 0
-    for item in metadata:
+    for item in items:
         if not isinstance(item, dict):
             raise ValueError("chunk metadata must be a mapping")
         target_rows += _non_negative_row_count(
@@ -133,7 +207,6 @@ def estimate_aggregation_disk_space(
     )
     sqlite_indexes = int(sqlite_raw * SQLITE_INDEX_MULTIPLIER)
     derived = target_rows * DERIVED_TARGET_ROW_BYTES
-    spill = source_rows * SPILL_SOURCE_ROW_BYTES
     sqlite_temp = int(
         (sqlite_raw + sqlite_indexes + derived + spill) * SQLITE_TEMP_JOURNAL_MULTIPLIER
     )
@@ -524,6 +597,8 @@ class SQLiteContextAggregator:
             }
             for ident, ts, src in q:
                 if src != current:
+                    if current is not None:
+                        self._clear_spill_source(w, current)
                     current = src
                     ev = iter(
                         c.execute(
@@ -544,6 +619,25 @@ class SQLiteContextAggregator:
                         "seq": 0,
                         "oldest": None,
                     }
+                # Reclaim the old window before adding new events: transient
+                # spill state must also fit the metadata rolling-window bound.
+                if spilled:
+                    self._spill_expire(w, src, ts - w, spill_state)
+                while not spilled and active and active[0][0] < ts - w:
+                    x = active.popleft()
+                    pair[(x[1], x[2])] -= 1
+                    ip[x[1]] -= 1
+                    port[x[2]] -= 1
+                    if not pair[(x[1], x[2])]:
+                        del pair[(x[1], x[2])]
+                    if not ip[x[1]]:
+                        del ip[x[1]]
+                    if not port[x[2]]:
+                        del port[x[2]]
+                # Skip pre-window observations (including gaps between targets)
+                # without ever inserting them into Python or SQLite spill state.
+                while next_ev and next_ev[0] < ts - w:
+                    next_ev = next(ev, None)
                 while next_ev and next_ev[0] <= ts + w:
                     x = next_ev
                     if not spilled and len(active) >= self.active_state_limit:
@@ -568,7 +662,6 @@ class SQLiteContextAggregator:
                         self._observe_python_state(active, pair, ip, port)
                     next_ev = next(ev, None)
                 if spilled:
-                    self._spill_expire(w, src, ts - w, spill_state)
                     self.max_post_spill_python_state = tuple(
                         max(a, b)
                         for a, b in zip(
@@ -576,17 +669,6 @@ class SQLiteContextAggregator:
                             (len(active), len(pair), len(ip), len(port)),
                         )
                     )
-                while not spilled and active and active[0][0] < ts - w:
-                    x = active.popleft()
-                    pair[(x[1], x[2])] -= 1
-                    ip[x[1]] -= 1
-                    port[x[2]] -= 1
-                    if not pair[(x[1], x[2])]:
-                        del pair[(x[1], x[2])]
-                    if not ip[x[1]]:
-                        del ip[x[1]]
-                    if not port[x[2]]:
-                        del port[x[2]]
                 out.append(
                     (
                         ident,
@@ -603,9 +685,22 @@ class SQLiteContextAggregator:
                     out.clear()
             if out:
                 c.executemany(f"INSERT INTO {name} VALUES(?,?,?,?,?)", out)
+            if current is not None:
+                self._clear_spill_source(w, current)
         c.execute(
             "CREATE TABLE s AS SELECT m.id,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN 1 ELSE 0 END app,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN m.src END src,w5.n,w5.u,w5.i,w5.p,w15.n,w15.u,w15.i,w15.p,w1.n,w1.u,w1.i,w1.p,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN COALESCE(day.n,0) END,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN COALESCE(day.u,0) END,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN COALESCE(day.i,0) END,CASE WHEN m.flags IS NOT NULL AND(m.flags&2)!=0 AND(m.flags&16)=0 THEN COALESCE(day.p,0) END FROM m LEFT JOIN w5 ON m.id=w5.id LEFT JOIN w15 ON m.id=w15.id LEFT JOIN w1 ON m.id=w1.id LEFT JOIN day ON m.src=day.src"
         )
+
+    def _clear_spill_source(self, window: int, src: str) -> None:
+        """Release completed derived state inside compute's outer transaction.
+
+        Output values have already been copied into scalar rows. Deleted pages
+        remain allocated and reusable; raw observations and ledger are untouched.
+        """
+        for table in ("spill_event", "spill_pair", "spill_ip", "spill_port"):
+            self.connection.execute(
+                f"DELETE FROM {table} WHERE window=? AND src=?", (window, src)
+            )
 
     def _observe_python_state(self, active, pair, ip, port) -> None:
         self.max_python_active_events = max(self.max_python_active_events, len(active))
