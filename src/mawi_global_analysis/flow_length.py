@@ -53,6 +53,7 @@ class FlowLengthResult:
     histogram: pd.DataFrame
     bin_edges: list[int]
     audit: dict[str, int]
+    exact_counts_path: Path | None = None
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -120,7 +121,8 @@ def _chunks(info: Inspection, name: str, columns: tuple[str, ...], size: int,
         raise ValueError(f'{name}: row_count mismatch: manifest={expected}, CSV={count}')
 
 
-def inspect_run(root: Path, dataset_id: str, run_name: str) -> Inspection:
+def inspect_run(root: Path, dataset_id: str, run_name: str, *,
+                verify_content_hashes: bool = True) -> Inspection:
     """Resolve only manifest-recorded files; check identities and small metadata.
 
     Absolute paths are never rewritten. CSV contents have no pipeline-recorded
@@ -175,7 +177,7 @@ def inspect_run(root: Path, dataset_id: str, run_name: str) -> Inspection:
         missing = set(schema) - set(header)
         if missing:
             raise ValueError(f'{name}: missing required columns: {sorted(missing)}')
-        if entry.get('sha256') is not None and sha256_file(file_path) != entry['sha256']:
+        if verify_content_hashes and entry.get('sha256') is not None and sha256_file(file_path) != entry['sha256']:
             raise ValueError(f'{name}: checksum mismatch')
         entries[name], paths[name] = entry, file_path
     flow_cache = manifest.get('cache', {}).get('flows', {})
@@ -380,7 +382,8 @@ def _summarize(db: sqlite3.Connection, info: Inspection):
 
 def analyze_run(root: Path, dataset_id: str, run_name: str, *, chunksize: int = 100_000,
                 scratch_dir: Path | None = None,
-                progress: Callable[[str, int], None] | None = None) -> FlowLengthResult:
+                progress: Callable[[str, int], None] | None = None,
+                exact_cache_dir: Path | None = None) -> FlowLengthResult:
     """Validate all rows, then return exact summaries and common-bin frequencies.
 
     Scratch disk grows with flow/label IDs and memberships; RAM is bounded by
@@ -389,7 +392,19 @@ def analyze_run(root: Path, dataset_id: str, run_name: str, *, chunksize: int = 
     """
     if type(chunksize) is not int or chunksize < 1:
         raise ValueError('chunksize must be a positive integer')
+    if exact_cache_dir is not None:
+        from mawi_global_analysis.flow_length_cache import load_cache, source_identity, store_cache
+        info = inspect_run(root, dataset_id, run_name, verify_content_hashes=False)
+        cached = load_cache(info, exact_cache_dir, source_identity(info))
+        if cached is not None:
+            if progress:
+                progress('整数度数cacheを再利用（フローCSVの全行読込なし）', cached.audit['flow_rows'])
+            return cached
+        if progress:
+            progress('整数度数の追加集計が必要です（既存CSVのみ、PCAP再処理なし）', 0)
     info = inspect_run(root, dataset_id, run_name)
+    identity = source_identity(info) if exact_cache_dir is not None else None
+    exact_path = None
     if scratch_dir is not None and not Path(scratch_dir).is_dir():
         raise FileNotFoundError(f'scratch_dirがありません: {scratch_dir}')
     with tempfile.TemporaryDirectory(prefix='mawi-flow-length-', dir=scratch_dir) as work:
@@ -401,9 +416,12 @@ def analyze_run(root: Path, dataset_id: str, run_name: str, *, chunksize: int = 
             if progress:
                 progress('集計・分位点計算', audit['flow_rows'])
             summary, histogram, edges = _summarize(db, info)
+            if exact_cache_dir is not None:
+                exact_path = store_cache(info, exact_cache_dir, identity, db,
+                                         summary, histogram, edges, audit)
         finally:
             db.close()
-    return FlowLengthResult(info, summary, histogram, edges, audit)
+    return FlowLengthResult(info, summary, histogram, edges, audit, exact_path)
 
 
 def make_demo_run(root: Path) -> tuple[str, str]:

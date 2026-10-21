@@ -123,3 +123,76 @@ uv run pytest -q
 重複ID、孤立ID、所属欠落を検査する。デモモードの全コードセル実行と、実データ欠落時の停止も検査する。
 集計に失敗した再実行では古い結果を無効化し、入力を変更したままの表示・保存も拒否する。
 合成テストは実装検証であり、実データ再現の証拠ではない。
+
+## 追加: 独立した線形・整数ビンのグラフ
+
+既存の比較グラフ、`flow_length_summary.csv`、`flow_length_histogram.csv`、
+`flow_length_page_*.png`は従来どおり。追加の線形グラフは既存の`figures`リストや
+比較PNGの出力に混ぜない。Scan-like判定とnative/normalizedの所属定義も変更していない。
+
+06 Notebookのセクション7で、台帳から取得した各nativeに加えselected_union、overall_ipv4について、
+それぞれ独立したMarkdown見出しとコードセルを持つ**新しい表示用Notebook**を生成する。
+18個なら20対象、別日で選定数が異なれば自動で増減する。元の06自身を実行中に書き換えず、
+元の解析成果物も上書きしない。06には統合群の3枚を確認するセルも追加している。
+
+生成先のパスは06の出力に表示される。そのNotebookを開き、最初の設定セルと目的の対象セルを実行する。
+対象名は実際のプレフィックスをMarkdown見出しに使うため、Notebookの目次や検索から見つけられる。
+各対象セルはRaw / Broad removed / Broad retainedの**3枚の別々の図**と、統計表を表示する。
+
+```python
+X_MAX = None   # 最初は全範囲
+# X_MAX = 100  # 1〜100パケットを表示
+# X_MAX = 200
+Y_AXIS = 'count'  # 'percent'なら各群の全フロー数に対する割合[%]
+INDIVIDUAL_OUTPUT_DIR = None  # 保存する場合は個別PNG用の新しいフォルダ
+```
+
+横軸・縦軸とも線形、整数パケット数の幅1のビン。存在しない整数値の度数は0であり、
+巨大な最大値まで空の棒を確保せず、非ゼロの整数ビンだけを描く。間の整数をまとめる処理ではない。
+非常に長いtailがある全範囲表示では1〜3の棒が画面上で小さくなるため、そのときはX_MAXで拡大する。
+同一対象の3群はRawの最大値（または指定X_MAX）を共通の横軸上限に使う。
+範囲外フロー数・群内割合、Raw件数・除外率、各群の中央値・p95・1パケット率を必ず付記する。
+%表示の分母は範囲外を含む各群の全件数。範囲内だけで再正規化しない。空群はn=0、率はNA。
+
+### 整数度数の保存と再利用
+
+旧`flow_length_histogram.csv`のビンは4–7、8–15…なので、正確な整数別度数には戻せない。
+summaryからも復元できない。推測や補間は行わない。
+
+そのため**初回だけ、保存済みrunのフローCSVから追加集計が必要**になる。PCAP再処理は不要。
+従来の一時SQLiteで作られていた整数度数を、新しい小さい`exact_counts.sqlite`に保存する。
+フロー全行の作業用DBを永続化するものではない。cache内には既存形式のsummary/histogram CSVと
+`cache_manifest.json`も保存し、2回目以降は既存比較グラフの集計も再利用する。
+
+06では既定で`<DATA_ROOT>/results/flow_length_exact_cache/<dataset>/<run>/`以下に、
+入力識別子ごとの新規ディレクトリを作る。研究室PCの保存先を変える場合:
+
+```bash
+export MAWI_FLOW_LENGTH_EXACT_CACHE_DIR=/large-disk/mawi-integer-counts
+export MAWI_FLOW_LENGTH_X_MAX=100
+export MAWI_FLOW_LENGTH_Y_AXIS=count
+export MAWI_FLOW_LENGTH_INDIVIDUAL_NOTEBOOK=/path/to/new/06_individual.ipynb
+export MAWI_FLOW_LENGTH_INDIVIDUAL_OUTPUT_DIR=/path/to/new/individual-png
+```
+
+X_MAX未指定時は全範囲。Notebook内のパラメータで変更してもよい。PNGは対象・群・X_MAX・縦軸を
+含む`individual_...png`という別名で保存し、同名の既存PNGがあれば停止する。
+表示用Notebookも既存同名ファイルを上書きしない。自動生成したNotebookのINDIVIDUAL_OUTPUT_DIRは
+既定Noneなので、全対象の保存が必要ならその設定セルで保存先を指定する。
+
+cache再利用はrun manifestのSHA-256、flow manifest、各入力CSVのpath/size/mtime_nsを照合する。
+cache内のSQLite・summary・histogramのSHA-256も検査する。元CSVが更新されていたら別cacheの
+新規集計となる。cacheが破損していたら停止し、黙って巨大CSVを再読込したり既存cacheを上書きしたりしない。
+path/size/mtimeを意図的に同じにした内容置換まで検出するものではない。この高速照合では元の巨大CSVを
+再ハッシュしない。cacheのない初回は従来の全行検証を行う。
+
+生成した実データ表示用Notebookはcache読込専用で、cache欠落・入力不一致では診断停止する。
+06に戻って明示的に追加集計する。生成Notebookは生成時のrootとコードの場所を参照するので、
+別PCへ移すより、研究室PC上で06から生成する。デモ版は単独実行できる小さい合成入力を作る。
+
+プログラムからは`analyze_run(..., exact_cache_dir=Path(...))`で保存・再利用を有効にできる。
+引数を省略した既存呼び出しは従来どおり。`integer_distribution`や`plot_individual_target`へ
+古い粗い集計だけを渡した場合は、整数度数の追加集計が必要と明示して停止する。
+
+実データで確認する点は、初回追加集計の時間・ディスク量、再利用が表示されること、台帳に応じた
+対象数と見出し、全範囲/100/200でのtail件数、既存比較図・件数の一致。Macでの検証は合成データのみ。
