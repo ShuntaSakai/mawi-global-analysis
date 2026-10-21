@@ -169,22 +169,41 @@ def test_main_notebook_reruns_analysis_from_cache_and_keeps_legacy_exports(tmp_p
     monkeypatch.setenv('MAWI_FLOW_LENGTH_INDIVIDUAL_NOTEBOOK',str(tmp_path/'targets.ipynb'))
     monkeypatch.setenv('MAWI_FLOW_LENGTH_INDIVIDUAL_OUTPUT_DIR',str(tmp_path/'linear-png'))
     monkeypatch.setenv('MAWI_FLOW_LENGTH_X_MAX','100')
+    from matplotlib.figure import Figure
+    import IPython.display
+    displayed=[]
+    monkeypatch.setattr(IPython.display,'display',lambda obj:displayed.append(obj))
     notebook=json.loads((root/'notebooks/06_prefix_flow_length_histograms.ipynb').read_text())
     namespace={'__name__':'__main__'}
     for cell in notebook['cells']:
         if cell['cell_type']=='code':exec(''.join(cell['source']),namespace)
-    assert (tmp_path/'targets.ipynb').is_file()
+    assert not (tmp_path/'targets.ipynb').exists()
+    assert not (tmp_path/'linear-png').exists()
+    assert not (namespace['DATA_ROOT']/'results/flow_length_views').exists()
     assert len(list((tmp_path/'legacy-output').glob('flow_length_page_*.png')))==2
-    assert len(list((tmp_path/'linear-png').glob('individual_*.png')))==3
+    figures=[obj for obj in displayed if isinstance(obj,Figure)]
+    assert len(figures)==17  # 2 unchanged comparisons + 5 targets * 3 independent figures
+    headings=[obj.data for obj in displayed if isinstance(obj,IPython.display.Markdown)]
+    targets=namespace['result'].inspection.selected_prefixes+['selected_union','overall_ipv4']
+    assert len(headings)==len(targets)
+    for target in targets:
+        assert any(target in text for text in headings)
+        assert sum(target in fig.axes[0].get_title() for fig in figures if len(fig.axes)==1)==3
+    before=namespace['result'].summary.copy(deep=True)
     report=json.loads((tmp_path/'legacy-output/analysis_manifest.json').read_text())
     assert report['evidence']=='synthetic_demo'
     monkeypatch.setattr(fl,'_ingest',lambda *a,**k:pytest.fail('Notebook rerun re-read flows'))
+    displayed.clear()
+    individual_cell=next(c for c in notebook['cells'] if c['cell_type']=='code' and 'plot_individual_target(' in ''.join(c['source']))
+    exec(''.join(individual_cell['source']),namespace)
+    assert sum(isinstance(obj,Figure) for obj in displayed)==15
+    pd.testing.assert_frame_equal(before,namespace['result'].summary)
     analysis=next(c for c in notebook['cells'] if c['cell_type']=='code' and 'result = analyze_run(' in ''.join(c['source']))
     exec(''.join(analysis['source']),namespace)
     assert namespace['result'].exact_counts_path.is_file()
 
 
-def test_eighteen_ledger_prefixes_generate_twenty_independent_sections(tmp_path):
+def test_eighteen_ledger_prefixes_display_twenty_inline_targets_without_files(tmp_path,monkeypatch):
     root=tmp_path/'source';dataset,run=fl.make_demo_run(root)
     from mawi_global_analysis.config import load_config
     from mawi_global_analysis.prefix import build_corrected_prefix_ledger
@@ -201,11 +220,29 @@ def test_eighteen_ledger_prefixes_generate_twenty_independent_sections(tmp_path)
     manifest['artifacts']['flow_prefix_membership']['row_count']=len(membership)
     info.manifest_path.write_text(json.dumps(manifest))
     result=fl.analyze_run(root,dataset,run,exact_cache_dir=tmp_path/'cache')
-    output=individual().write_individual_notebook(result,tmp_path/'twenty.ipynb')
-    cells=json.loads(output.read_text())['cells']
-    target_code=[c for c in cells if c['cell_type']=='code' and c['metadata'].get('flow_length_target')]
-    assert len(target_code)==20
-    assert {c['metadata']['flow_length_target'] for c in target_code}==set(selected+['selected_union','overall_ipv4'])
+    from matplotlib.figure import Figure
+    from IPython.display import Markdown
+    import os
+    notebook=json.loads((Path(__file__).parents[2]/'notebooks/06_prefix_flow_length_histograms.ipynb').read_text())
+    displayed=[]
+    namespace={'__name__':'__main__','result':result,'require_result':lambda:None,
+               'os':os,'Path':Path,'plt':plt,'display':displayed.append,'Markdown':Markdown,'DEMO':False}
+    before_files={p.relative_to(tmp_path) for p in tmp_path.rglob('*')}
+    before_summary=result.summary.copy(deep=True)
+    monkeypatch.setattr(fl,'_ingest',lambda *a,**k:pytest.fail('inline display must not ingest flows'))
+    cells=[c for c in notebook['cells'] if c.get('id','').startswith('individual-') and c['cell_type']=='code']
+    for cell in cells:exec(''.join(cell['source']),namespace)
+    figures=[obj for obj in displayed if isinstance(obj,Figure)]
+    headings=[obj.data for obj in displayed if isinstance(obj,Markdown)]
+    assert len(figures)==60
+    assert len(headings)==20
+    for target in selected+['selected_union','overall_ipv4']:
+        assert any(target in text for text in headings)
+        matching=[f for f in figures if target in f.axes[0].get_title()]
+        assert len(matching)==3
+        assert all(len(f.axes)==1 and f.axes[0].get_xscale()=='linear' for f in matching)
+    assert before_files=={p.relative_to(tmp_path) for p in tmp_path.rglob('*')}
+    pd.testing.assert_frame_equal(before_summary,result.summary)
 
 
 def test_generated_saved_run_view_loads_only_matching_cache(exact_result,tmp_path,monkeypatch):

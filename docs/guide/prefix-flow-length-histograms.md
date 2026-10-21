@@ -131,20 +131,19 @@ uv run pytest -q
 比較PNGの出力に混ぜない。Scan-like判定とnative/normalizedの所属定義も変更していない。
 
 06 Notebookのセクション7で、台帳から取得した各nativeに加えselected_union、overall_ipv4について、
-それぞれ独立したMarkdown見出しとコードセルを持つ**新しい表示用Notebook**を生成する。
-18個なら20対象、別日で選定数が異なれば自動で増減する。元の06自身を実行中に書き換えず、
-元の解析成果物も上書きしない。06には統合群の3枚を確認するセルも追加している。
+**06 Notebook内に直接表示**する。18個なら20対象、別日で選定数が異なれば自動で増減する。
+1つのコードセルで全対象を順番に描き、対象ごとのMarkdown見出し・統計表・3枚の独立した図を出力する。
+別Notebook・生成先リンク・個別グラフ用のファイルやディレクトリは作成しない。
 
-生成先のパスは06の出力に表示される。そのNotebookを開き、最初の設定セルと目的の対象セルを実行する。
-対象名は実際のプレフィックスをMarkdown見出しに使うため、Notebookの目次や検索から見つけられる。
-各対象セルはRaw / Broad removed / Broad retainedの**3枚の別々の図**と、統計表を表示する。
+06を上から実行した後、セクション7の設定セルと「全対象を順番に表示」セルを実行する。
+再描画する場合はX_MAXやY_AXISを変更して表示セルだけを再実行すればよい。集計をやり直さず、
+保存済みの整数度数を使う。各対象の見出しは選定台帳のプレフィックス名であり、固定リストではない。
 
 ```python
 X_MAX = None   # 最初は全範囲
 # X_MAX = 100  # 1〜100パケットを表示
 # X_MAX = 200
 Y_AXIS = 'count'  # 'percent'なら各群の全フロー数に対する割合[%]
-INDIVIDUAL_OUTPUT_DIR = None  # 保存する場合は個別PNG用の新しいフォルダ
 ```
 
 横軸・縦軸とも線形、整数パケット数の幅1のビン。存在しない整数値の度数は0であり、
@@ -171,14 +170,12 @@ summaryからも復元できない。推測や補間は行わない。
 export MAWI_FLOW_LENGTH_EXACT_CACHE_DIR=/large-disk/mawi-integer-counts
 export MAWI_FLOW_LENGTH_X_MAX=100
 export MAWI_FLOW_LENGTH_Y_AXIS=count
-export MAWI_FLOW_LENGTH_INDIVIDUAL_NOTEBOOK=/path/to/new/06_individual.ipynb
-export MAWI_FLOW_LENGTH_INDIVIDUAL_OUTPUT_DIR=/path/to/new/individual-png
 ```
 
-X_MAX未指定時は全範囲。Notebook内のパラメータで変更してもよい。PNGは対象・群・X_MAX・縦軸を
-含む`individual_...png`という別名で保存し、同名の既存PNGがあれば停止する。
-表示用Notebookも既存同名ファイルを上書きしない。自動生成したNotebookのINDIVIDUAL_OUTPUT_DIRは
-既定Noneなので、全対象の保存が必要ならその設定セルで保存先を指定する。
+X_MAX未指定時は全範囲。Notebook内のパラメータで変更してもよい。個別表示は外部保存を行わず、
+既存のOUTPUT_DIRを指定した比較グラフ・CSVの任意保存とは独立している。
+以前のMAWI_FLOW_LENGTH_INDIVIDUAL_NOTEBOOK / MAWI_FLOW_LENGTH_INDIVIDUAL_OUTPUT_DIRは、
+06の個別表示フローでは使用しない。設定が残っていても別Notebookや個別PNGを作成しない。
 
 cache再利用はrun manifestのSHA-256、flow manifest、各入力CSVのpath/size/mtime_nsを照合する。
 cache内のSQLite・summary・histogramのSHA-256も検査する。元CSVが更新されていたら別cacheの
@@ -186,9 +183,8 @@ cache内のSQLite・summary・histogramのSHA-256も検査する。元CSVが更�
 path/size/mtimeを意図的に同じにした内容置換まで検出するものではない。この高速照合では元の巨大CSVを
 再ハッシュしない。cacheのない初回は従来の全行検証を行う。
 
-生成した実データ表示用Notebookはcache読込専用で、cache欠落・入力不一致では診断停止する。
-06に戻って明示的に追加集計する。生成Notebookは生成時のrootとコードの場所を参照するので、
-別PCへ移すより、研究室PC上で06から生成する。デモ版は単独実行できる小さい合成入力を作る。
+個別表示セルはcacheの読込と描画だけを行う。整数度数がない場合は追加集計が必要と明示して停止する。
+その場合は06の集計セルを実行してから表示に進む。cacheの保存・再利用は従来の集計処理に残している。
 
 プログラムからは`analyze_run(..., exact_cache_dir=Path(...))`で保存・再利用を有効にできる。
 引数を省略した既存呼び出しは従来どおり。`integer_distribution`や`plot_individual_target`へ
