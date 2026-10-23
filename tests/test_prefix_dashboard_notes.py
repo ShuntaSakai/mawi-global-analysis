@@ -20,7 +20,8 @@ const stat={flow_count:1,median:1,p95:1,one_packet_rate:1,removal_rate:0};
 const target=prefix=>({prefix,notes:{observation:'initial',interpretation:'',next_check:''},stats:{Raw:stat,removed:stat,retained:stat},thumbnail:{},detail_image:''});
 const payload={dataset_id:'dataset',run_name:'run',prefixes:[target('a'),target('b')],references:[target('reference')]};
 get('dashboard-data').textContent=JSON.stringify(payload);get('sort').value='flow_count';
-global.document={getElementById:get,createElement:()=>new El(),createTextNode:x=>x,querySelectorAll:()=>[],body:new El(),addEventListener(){}};
+class Template { cloneNode(){return new Template();} querySelector(){return this.data||(this.data={textContent:''});} get outerHTML(){return '<html><script id="dashboard-data" type="application/json">'+this.data.textContent+'</script></html>';}}
+global.document={documentElement:new Template(),getElementById:get,createElement:()=>new El(),createTextNode:x=>x,querySelectorAll:()=>[],body:new El(),addEventListener(){}};
 let confirmResult=true,confirmCount=0;const windowEvents={};
 global.window={innerWidth:1200,addEventListener:(k,f)=>windowEvents[k]=f,confirm:()=>{confirmCount++;return confirmResult;}};
 '''
@@ -46,8 +47,24 @@ byPrefix.get('a').notes.observation='late edit';confirmResult=false;const count=
 // Export uses the actual Blob/download path and preserves plain text.
 let blob;URL.createObjectURL=b=>{blob=b;return 'blob:test';};URL.revokeObjectURL=()=>{};
 get('export-notes').click();assert.equal(JSON.parse(await blob.text()).notes.a.observation,'late edit');assert(!isDirty());
+// HTML exports contain every target, preserve analysis, and escape HTML delimiters.
+const hostile='</script><script>alert(1)</script><img src=x onerror=alert(1)> & > " \\\n日本語\u2028\u2029';
+for(const t of all)t.notes.observation=hostile+t.prefix;
+const analysis=JSON.parse(JSON.stringify(data));
+const first=notedHTML();
+const embedded=first.split('type="application/json">')[1].split('</script>')[0];
+assert(!embedded.includes('<'));assert(!embedded.includes('>'));assert(!embedded.includes('&'));
+const restored=JSON.parse(embedded);assert.deepEqual(restored,data);
+assert.equal(restored.references[0].notes.observation,hostile+'reference');
+get('export-html').click();assert.equal(await blob.text(),first);assert(!isDirty());
+assert.deepEqual(data,analysis);assert.equal(notedHTML(),first);
+// Reopened data starts clean, remains editable, and supports another export.
+const vm=require('node:vm');
+const reopen=scriptSource=>{const context={require,console,Blob,URL,setTimeout,document,window};get('dashboard-data').textContent=embedded;vm.runInNewContext(scriptSource+`;assert.equal(isDirty(),false);byPrefix.get('a').notes.next_check='again';assert(isDirty());assert(JSON.parse(notedHTML().split('type="application/json">')[1].split('</script>')[0]).prefixes[0].notes.next_check==='again');`,{...context,assert});};
+reopen(SOURCE);
+byPrefix.get('a').notes.next_check='unsaved';URL.createObjectURL=()=>{throw Error('download failed');};get('export-html').click();assert(isDirty());
 console.log('notes behavioral checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
-    result = subprocess.run([node, '-'], input=harness + script + checks, text=True, capture_output=True)
+    result = subprocess.run([node, '-'], input=harness + '\nconst SOURCE='+__import__('json').dumps(script)+';\n' + script + checks, text=True, capture_output=True)
     assert result.returncode == 0, result.stdout + result.stderr

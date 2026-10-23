@@ -32,7 +32,7 @@ textarea{font:inherit;width:100%;min-height:90px;resize:vertical;border:1px soli
 <button id="direction" class="small-button" aria-label="並べ替え順を変更">大きい順 ↓</button>
 </div>
 </div>
-<div class="notes-actions"><button id="export-notes" class="small-button">メモをJSONに保存</button><button id="import-notes" class="small-button">JSONからメモを読み込む</button><input id="notes-file" type="file" accept=".json,application/json" hidden><span id="notes-status" role="status" aria-live="polite"></span></div>
+<div class="notes-actions"><button id="export-notes" class="small-button">メモをJSONに保存</button><button id="import-notes" class="small-button">JSONからメモを読み込む</button><button id="export-html" class="small-button">メモ付きHTMLを保存</button><input id="notes-file" type="file" accept=".json,application/json" hidden><span id="notes-status" role="status" aria-live="polite"></span></div>
 <main class="layout">
 <section aria-label="プレフィックス一覧">
 <div class="section-head"><h2>選定プレフィックス</h2><span id="count" class="hint" aria-live="polite"></span></div>
@@ -55,6 +55,8 @@ textarea{font:inherit;width:100%;min-height:90px;resize:vertical;border:1px soli
 <script id="dashboard-data" type="application/json">__DASHBOARD_DATA__</script>
 <script>
 'use strict';
+// Preserve the original template before runtime rendering.
+const pristineDashboard = document.documentElement.cloneNode(true);
 const data = JSON.parse(document.getElementById('dashboard-data').textContent);
 const $ = id => document.getElementById(id);
 const groups = ['Raw','removed','retained'];
@@ -102,6 +104,27 @@ $('export-notes').addEventListener('click',()=>{
   document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
   savedNotes=notesSnapshot();notesStatus('ダウンロードを開始しました。保存完了はブラウザで確認してください');
  }catch(error){notesStatus(`保存失敗: ${error.message}`);}
+});
+function notedHTML(){
+ const notes=validateNotes(notesDocument());
+ const payload=JSON.parse(JSON.stringify(data));
+ for(const target of [...payload.prefixes,...payload.references])target.notes={...notes[target.prefix]};
+ const escaped=JSON.stringify(payload).replace(/[<>&\u2028\u2029]/g,c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0'));
+ const clone=pristineDashboard.cloneNode(true);
+ clone.querySelector('#dashboard-data').textContent=escaped;
+ return '<!DOCTYPE html>\n'+clone.outerHTML;
+}
+$('export-html').addEventListener('click',()=>{
+ let url,link;
+ try{
+  const blob=new Blob([notedHTML()],{type:'text/html;charset=utf-8'});
+  url=URL.createObjectURL(blob);link=element('a');link.href=url;
+  const id=String(data.dataset_id).replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,120)||'dataset';
+  link.download=`prefix-dashboard-${id}-noted.html`;
+  document.body.append(link);link.click();
+  savedNotes=notesSnapshot();notesStatus('新しいHTMLのダウンロードを開始しました。保存完了はブラウザで確認してください');
+ }catch(error){notesStatus(`HTML保存失敗: ${error.message}`);}
+ finally{if(link)link.remove();if(url)setTimeout(()=>URL.revokeObjectURL(url),1000);}
 });
 $('import-notes').addEventListener('click',()=>$('notes-file').click());
 $('notes-file').addEventListener('change',async()=>{const file=$('notes-file').files[0];$('notes-file').value='';if(file)await importNotes(file);});
