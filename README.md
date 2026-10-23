@@ -55,3 +55,8 @@ make -C vendor/agurim/src
 [実データ実行 runbook](docs/guide/real-data-execution-runbook.md) を確認してください。
 
 AI エージェント向けの参照順と研究契約は [docs/agent/](docs/agent/README.md) にあります。
+
+## プレフィックス分布ダッシュボード
+
+保存済みflow-lengthキャッシュから、オフラインで閲覧できる単体HTMLを生成できます。
+生成・Macへのコピー・メモの書式は[ダッシュボードガイド](docs/guide/prefix-dashboard.md)を参照してください。

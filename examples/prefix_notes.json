@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "notes": {
+    "synthetic_flow_length_demo": {
+      "scan_source_driven_removal": {
+        "192.0.2.0/24": {
+          "observation": "合成データの例：Rawは5フロー、removedは2フロー、retainedは3フロー。実データの観測結果ではありません。",
+          "interpretation": "考察・仮説を観測事実と分けて記入します。この例から実MAWI通信の性質は判断できません。",
+          "next_check": "実データでは対象dataset・run・prefixを確認し、確認済みの内容に置き換えてください。"
+        }
+      }
+    },
+    "202604081400": {
+      "scan_source_driven_removal": {
+        "157.53.116.16/28": {
+          "observation": "",
+          "interpretation": "",
+          "next_check": ""
+        }
+      }
+    }
+  }
+}
