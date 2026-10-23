@@ -6,6 +6,8 @@ performed here. Counts and bins are consumed from FlowLengthResult unchanged.
 from __future__ import annotations
 
 import base64
+import hashlib
+import re
 from io import BytesIO
 import json
 import math
@@ -241,7 +243,12 @@ def export_dashboard(root: Path, dataset_id: str, run_name: str, cache_dir: Path
                           ('\u2028', '\\u2028'), ('\u2029', '\\u2029')]:
         encoded = encoded.replace(char, escaped)
     template = Path(__file__).with_name('prefix_dashboard.html').read_text(encoding='utf-8')
-    html = template.replace('__DASHBOARD_DATA__', encoded)
+    # CSP hashes the exact UTF-8 script text, including its boundary newlines.
+    scripts = re.findall(r'<script>(.*?)</script>', template, re.S)
+    if len(scripts) != 1 or template.count('__DASHBOARD_SCRIPT_HASH__') != 1:
+        raise ValueError('Dashboard template must contain one application script and CSP hash slot')
+    digest = base64.b64encode(hashlib.sha256(scripts[0].encode('utf-8')).digest()).decode('ascii')
+    html = template.replace('__DASHBOARD_SCRIPT_HASH__', digest).replace('__DASHBOARD_DATA__', encoded)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open('x', encoding='utf-8') as stream:
         stream.write(html)

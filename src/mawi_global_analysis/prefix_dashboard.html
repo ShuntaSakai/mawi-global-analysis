@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'sha256-__DASHBOARD_SCRIPT_HASH__'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <title>MAWI · Prefix Flow Length</title>
 <style>
 :root{color-scheme:light;--ink:#183044;--muted:#617282;--line:#d9e2e7;--paper:#fff;--blue:#4477aa;--red:#cc6677;--green:#228833;--accent:#0d6d74}
@@ -79,16 +79,38 @@ function validateNotes(value){
  if(entries.length!==all.length)throw new Error('全対象のメモが必要です。');
  for(const [prefix,notes] of entries){
   if(!byPrefix.has(prefix)||!object(notes)||Object.keys(notes).sort().join(',')!=='interpretation,next_check,observation')throw new Error('対象名またはメモ項目が不正です。');
-  for(const key of noteFields)if(typeof notes[key]!=='string'||notes[key].length>MAX_NOTE_LENGTH)throw new Error('メモは各項目10,000文字以内の文字列が必要です。');
+  for(const key of noteFields)if(typeof notes[key]!=='string'||notes[key].length>MAX_NOTE_LENGTH||!wellFormedText(notes[key]))throw new Error('メモは各項目10,000文字以内の有効なUnicode文字列が必要です。');
  }
  return value.notes;
+}
+// Bound nesting before parsing; brackets inside JSON strings do not count.
+function parseNotesJSON(text){
+ let depth=0,inString=false,escaped=false;
+ for(const char of text){
+  if(inString){if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char==='"')inString=false;}
+  else if(char==='"')inString=true;
+  else if(char==='{'||char==='['){if(++depth>16)throw new Error('JSONの階層が深すぎます（最大16階層）。');}
+  else if(char==='}'||char===']')depth--;
+ }
+ try{return JSON.parse(text,(key,value)=>{
+  if(['__proto__','constructor','prototype'].includes(key))throw new Error('禁止されたJSONキーです。');
+  return value;
+ });}catch(error){throw new Error(`JSONを解析できません: ${error.message}`);}
+}
+function wellFormedText(text){
+ for(let i=0;i<text.length;i++){
+  const unit=text.charCodeAt(i);
+  if(unit>=0xd800&&unit<=0xdbff){const next=text.charCodeAt(++i);if(!(next>=0xdc00&&next<=0xdfff))return false;}
+  else if(unit>=0xdc00&&unit<=0xdfff)return false;
+ }
+ return true;
 }
 async function importNotes(file){
  try{
   if(file.size>MAX_FILE_BYTES)throw new Error('ファイルは5 MiB以内にしてください。');
   const text=await file.text();
   if(new Blob([text]).size>MAX_FILE_BYTES)throw new Error('ファイルは5 MiB以内にしてください。');
-  const incoming=validateNotes(JSON.parse(text));
+  const incoming=validateNotes(parseNotesJSON(text));
   const differs=all.some(t=>noteFields.some(k=>(t.notes[k]||'')!==incoming[t.prefix][k]));
   if(differs&&!window.confirm('現在のメモを読み込んだJSONの内容で上書きしますか？')){notesStatus('読み込みをキャンセルしました');return;}
   for(const t of all)t.notes={...incoming[t.prefix]};

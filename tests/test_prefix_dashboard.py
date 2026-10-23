@@ -254,3 +254,25 @@ def test_optional_nan_quantiles_remain_undefined(saved):
     target = dashboard().build_dashboard_data(result)['prefixes'][0]
     assert target['stats']['Raw']['median'] is None
     assert target['stats']['Raw']['p95'] is None
+
+
+def test_generated_csp_authorizes_exact_app_source_only(saved, tmp_path):
+    import base64
+    import hashlib
+    root, dataset, run, cache, _ = saved
+    html = dashboard().export_dashboard(root, dataset, run, cache, tmp_path/'hashed.html').read_text()
+    scripts = re.findall(r'<script>(.*?)</script>', html, re.S)
+    assert len(scripts) == 1
+    digest = base64.b64encode(hashlib.sha256(scripts[0].encode('utf-8')).digest()).decode('ascii')
+    policy = re.search(r'http-equiv="Content-Security-Policy" content="([^"]+)"', html).group(1)
+    assert f"script-src 'sha256-{digest}'" in policy
+    assert "script-src 'unsafe-inline'" not in policy
+    assert "'unsafe-eval'" not in policy
+    assert "connect-src 'none'" in policy
+    assert "img-src data:" in policy
+    assert "style-src 'unsafe-inline'" in policy
+    template = Path(dashboard().__file__).with_name('prefix_dashboard.html').read_text()
+    assert scripts[0] == re.search(r'<script>(.*?)</script>', template, re.S).group(1)
+    assert not re.search(r'\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|eval)\s*\(', scripts[0])
+    assert not re.search(r'\bnew\s+Function\b|\.innerHTML\s*=', scripts[0])
+    assert not re.search(r'<(?:script|link|iframe|form)\b[^>]*(?:src|href|action)\s*=', html, re.I)
