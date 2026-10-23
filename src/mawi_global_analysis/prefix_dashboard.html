@@ -9,6 +9,7 @@
 :root{color-scheme:light;--ink:#183044;--muted:#617282;--line:#d9e2e7;--paper:#fff;--blue:#4477aa;--red:#cc6677;--green:#228833;--accent:#0d6d74}
 *{box-sizing:border-box}body{margin:0;background:#f2f5f7;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;line-height:1.55}button,input,select{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #2d9ca8;outline-offset:3px}header{background:#132c3e;color:white;padding:26px 34px 22px}.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#a6cad4;font-weight:700}h1{font-size:27px;letter-spacing:-.025em;margin:5px 0 7px}header p{margin:0;color:#cbdbe4}.identity{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px}.badge{font-size:12px;border-radius:5px;padding:4px 9px;background:#284658;color:#d8edf3}.badge.demo{background:#ffe2a1;color:#533600;font-weight:750}.toolbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:white;border-bottom:1px solid var(--line);padding:15px 34px}.segmented{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}.group{border:0;border-right:1px solid var(--line);background:white;padding:8px 14px}.group:last-child{border:0}.group[aria-pressed="true"]{background:#e9f1f7;font-weight:750;box-shadow:inset 0 -3px var(--blue)}.group[data-group="removed"][aria-pressed="true"]{background:#faedef;box-shadow:inset 0 -3px var(--red)}.group[data-group="retained"][aria-pressed="true"]{background:#edf6ee;box-shadow:inset 0 -3px var(--green)}.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-left:auto}.controls label{color:var(--muted);font-size:12px}input,select{border:1px solid #c4d0d9;border-radius:6px;background:white;color:var(--ink);padding:8px}input{width:190px}.small-button{border:1px solid #c4d0d9;background:white;padding:7px 11px;border-radius:6px;color:var(--ink)}.layout{display:grid;grid-template-columns:minmax(360px, .85fr) minmax(590px,1.4fr);gap:24px;max-width:1800px;margin:0 auto;padding:26px 30px 50px}.section-head{display:flex;justify-content:space-between;align-items:center;margin:0 0 12px;gap:10px}h2{font-size:17px;margin:0}h3{font-size:14px;margin:0 0 10px}.hint,.muted{color:var(--muted);font-size:12px}.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;text-align:left;background:white;border:1px solid var(--line);border-radius:10px;padding:13px 13px 10px;width:100%;color:var(--ink);transition:border-color .12s,box-shadow .12s}.card:hover{border-color:#7ca6b7;box-shadow:0 3px 12px #18304413}.card.selected{border-color:var(--accent);box-shadow:0 0 0 2px #0d6d7420}.prefix{display:block;font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;font-weight:750;overflow-wrap:anywhere}.card img{display:block;width:100%;height:auto;margin:6px 0}.card-stats{display:flex;gap:6px;justify-content:space-between;font-size:11px;color:var(--muted);flex-wrap:wrap}.card-stats strong{display:block;font-size:15px;color:var(--ink);font-variant-numeric:tabular-nums}.card-group{font-size:10px;font-weight:650;color:var(--muted);display:block;margin-top:4px}.references{margin-top:25px;padding-top:18px;border-top:1px solid #ccd8e0}.references .card{background:#f9fbfc}.detail{align-self:start;position:sticky;top:18px;background:white;border:1px solid var(--line);border-radius:12px;overflow:hidden}.detail-head{padding:21px 24px 16px;border-bottom:1px solid #e7edf1;background:#fbfdfe}.detail-head h2{font-family:ui-monospace,SFMono-Regular,monospace;font-size:22px;overflow-wrap:anywhere}.detail-head p{margin:5px 0 0}.metrics{display:flex;gap:28px;flex-wrap:wrap;margin-top:16px}.metrics span{display:block;font-size:11px;color:var(--muted)}.metrics strong{display:block;font-size:21px;font-variant-numeric:tabular-nums}.detail-body{padding:16px 20px 22px}.plot-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:10px}.plot{display:block;width:100%;height:auto}.table-wrap{overflow-x:auto;margin:14px 0 19px}table{border-collapse:collapse;width:100%;font-size:12px;font-variant-numeric:tabular-nums}th,td{padding:9px 7px;text-align:right;white-space:nowrap;border-bottom:1px solid #e7edf1}th{font-weight:550;color:var(--muted)}th:first-child,td:first-child{text-align:left}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}.note-grid{display:grid;gap:12px}.note{border-left:3px solid #dbe8ec;padding:0 0 0 12px}.note h3{font-size:12px;margin:0 0 3px;color:#526b7d}.note p{margin:0;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere}.definition{padding:12px 15px;background:#f0f5f7;border-radius:7px;font-size:12px;color:#526879;margin:18px 0 0}.empty{padding:25px;border:1px dashed #bacbd6;border-radius:8px;color:var(--muted);grid-column:1/-1}.tooltip{position:fixed;z-index:10;width:310px;max-width:calc(100vw - 24px);max-height:65vh;overflow:auto;pointer-events:none;background:#142d40;color:#fff;padding:15px;border-radius:9px;box-shadow:0 10px 30px #10223035;font-size:12px}.tooltip p{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.tooltip h3{font-family:ui-monospace,monospace;overflow-wrap:anywhere}footer{border-top:1px solid var(--line);padding:20px 34px;color:var(--muted);font-size:11px;overflow-wrap:anywhere}details summary{cursor:pointer}dialog{border:1px solid #bccbd5;border-radius:10px;max-width:96vw;width:1600px;padding:16px}dialog::backdrop{background:#10283899}.zoom-scroll{overflow:auto}dialog img{display:block;width:100%;min-width:1050px}.dialog-top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:10px}[hidden]{display:none!important}.fatal{padding:30px;color:#982c3d}noscript{display:block;padding:20px;background:#fff0c7}
 @media(min-width:1600px){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:1050px){.layout{grid-template-columns:1fr}.detail{position:static}.cards{grid-template-columns:repeat(3,minmax(0,1fr))}.controls{margin-left:0}}@media(max-width:620px){header{padding:22px 18px}h1{font-size:23px}.toolbar{padding:12px 18px}.layout{padding:20px 14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.controls{gap:7px}input{width:160px}.detail-head{padding:16px}.detail-body{padding:12px}.detail-head h2{font-size:19px}.metrics{gap:20px}}
+textarea{font:inherit;width:100%;min-height:90px;resize:vertical;border:1px solid #c4d0d9;border-radius:6px;padding:8px}textarea:focus-visible{outline:3px solid #2d9ca8}.notes-actions{display:flex;gap:10px;flex-wrap:wrap;padding:12px 34px;background:white}
 </style>
 </head>
 <body>
@@ -31,6 +32,7 @@
 <button id="direction" class="small-button" aria-label="並べ替え順を変更">大きい順 ↓</button>
 </div>
 </div>
+<div class="notes-actions"><button id="export-notes" class="small-button">メモをJSONに保存</button><button id="import-notes" class="small-button">JSONからメモを読み込む</button><input id="notes-file" type="file" accept=".json,application/json" hidden><span id="notes-status" role="status" aria-live="polite"></span></div>
 <main class="layout">
 <section aria-label="プレフィックス一覧">
 <div class="section-head"><h2>選定プレフィックス</h2><span id="count" class="hint" aria-live="polite"></span></div>
@@ -43,13 +45,13 @@
 <div class="detail-body"><div class="plot-head"><span class="hint">左：度数 / 右：各群内の割合</span><button id="zoom" class="small-button">グラフを拡大</button></div>
 <img id="detail-image" class="plot" alt="">
 <div class="table-wrap"><table><thead><tr><th scope="col">群</th><th scope="col">フロー数</th><th scope="col">中央値</th><th scope="col">p95</th><th scope="col">1パケット率</th></tr></thead><tbody id="stats"></tbody></table></div>
-<div class="note-grid"><div class="note"><h3>観測事実</h3><p id="observation"></p></div><div class="note"><h3>考察・仮説</h3><p id="interpretation"></p></div><div class="note"><h3>追加調査事項</h3><p id="next-check"></p></div></div>
+<div class="note-grid"><div class="note"><h3><label for="observation">観測事実</label></h3><textarea id="observation" placeholder="未記入"></textarea></div><div class="note"><h3><label for="interpretation">考察・仮説</label></h3><textarea id="interpretation" placeholder="未記入"></textarea></div><div class="note"><h3><label for="next-check">追加調査事項</label></h3><textarea id="next-check" placeholder="未記入"></textarea></div></div>
 <p class="definition">removed は Broad Scan-like の除外対象、retained は除外後に残ったフローです。Raw = removed + retained。割合の分母は各群の全フロー数です。共通ビンは幅の異なる区間を等間隔に並べたもので、確率密度ではありません。観測パターンや分布だけで攻撃・正常を判定しません。</p></div>
 </section>
 </main>
 <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
 <dialog id="zoom-dialog" aria-label="比較図の拡大"><div class="dialog-top"><strong id="zoom-title"></strong><button id="close-zoom" class="small-button">閉じる</button></div><div class="zoom-scroll"><img id="zoom-image" alt=""></div></dialog>
-<footer>保存済みキャッシュの表示専用 · オフライン閲覧 · PCAP再処理・Scan再判定なし<details><summary>入力の識別情報</summary><p id="provenance"></p></details></footer>
+<footer>保存済みキャッシュの閲覧・メモ編集 · オフライン閲覧 · PCAP再処理・Scan再判定なし<details><summary>入力の識別情報</summary><p id="provenance"></p></details></footer>
 <script id="dashboard-data" type="application/json">__DASHBOARD_DATA__</script>
 <script>
 'use strict';
@@ -60,6 +62,52 @@ const colors = {Raw:'#4477AA',removed:'#CC6677',retained:'#228833'};
 const all = [...data.prefixes,...data.references];
 const byPrefix = new Map(all.map(t => [t.prefix,t]));
 let group = 'Raw', selected = data.prefixes[0].prefix, descending = true;
+const noteFields = ['observation','interpretation','next_check'];
+const MAX_NOTE_LENGTH = 10000, MAX_FILE_BYTES = 5 * 1024 * 1024;
+let savedNotes = notesSnapshot();
+function notesSnapshot(){return JSON.stringify(Object.fromEntries(all.map(t=>[t.prefix,Object.fromEntries(noteFields.map(k=>[k,t.notes[k] || '']))])));}
+function isDirty(){return notesSnapshot() !== savedNotes;}
+function notesStatus(message){$('notes-status').textContent=`${isDirty()?'未保存の変更あり':'保存済み（変更なし）'}${message?' · '+message:''}`;}
+function notesDocument(){return {schema_version:1,dataset_id:data.dataset_id,run_name:data.run_name,notes:JSON.parse(notesSnapshot())};}
+function validateNotes(value){
+ const object=v=>v!==null && typeof v==='object' && !Array.isArray(v);
+ if(!object(value)||value.schema_version!==1||value.dataset_id!==data.dataset_id||value.run_name!==data.run_name||!object(value.notes))throw new Error('形式・schema_version・dataset/runが一致しません。');
+ if(Object.keys(value).sort().join(',')!=='dataset_id,notes,run_name,schema_version')throw new Error('未対応のJSON項目です。');
+ const entries=Object.entries(value.notes);
+ if(entries.length!==all.length)throw new Error('全対象のメモが必要です。');
+ for(const [prefix,notes] of entries){
+  if(!byPrefix.has(prefix)||!object(notes)||Object.keys(notes).sort().join(',')!=='interpretation,next_check,observation')throw new Error('対象名またはメモ項目が不正です。');
+  for(const key of noteFields)if(typeof notes[key]!=='string'||notes[key].length>MAX_NOTE_LENGTH)throw new Error('メモは各項目10,000文字以内の文字列が必要です。');
+ }
+ return value.notes;
+}
+async function importNotes(file){
+ try{
+  if(file.size>MAX_FILE_BYTES)throw new Error('ファイルは5 MiB以内にしてください。');
+  const text=await file.text();
+  if(new Blob([text]).size>MAX_FILE_BYTES)throw new Error('ファイルは5 MiB以内にしてください。');
+  const incoming=validateNotes(JSON.parse(text));
+  const differs=all.some(t=>noteFields.some(k=>(t.notes[k]||'')!==incoming[t.prefix][k]));
+  if(differs&&!window.confirm('現在のメモを読み込んだJSONの内容で上書きしますか？')){notesStatus('読み込みをキャンセルしました');return;}
+  for(const t of all)t.notes={...incoming[t.prefix]};
+  savedNotes=notesSnapshot();renderCards();renderDetail();notesStatus('JSONを読み込みました');
+ }catch(error){notesStatus(`読み込み失敗: ${error.message}`);}
+}
+$('export-notes').addEventListener('click',()=>{
+ try{
+  const value=notesDocument();validateNotes(value);
+  const blob=new Blob([JSON.stringify(value,null,2)+'\n'],{type:'application/json'});
+  if(blob.size>MAX_FILE_BYTES)throw new Error('JSONが5 MiBを超えています。メモを短くしてください。');
+  const url=URL.createObjectURL(blob),link=element('a');link.href=url;link.download=`prefix_notes_${String(data.dataset_id).replace(/[^a-zA-Z0-9_-]/g,'_')}.json`;
+  document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  savedNotes=notesSnapshot();notesStatus('ダウンロードを開始しました。保存完了はブラウザで確認してください');
+ }catch(error){notesStatus(`保存失敗: ${error.message}`);}
+});
+$('import-notes').addEventListener('click',()=>$('notes-file').click());
+$('notes-file').addEventListener('change',async()=>{const file=$('notes-file').files[0];$('notes-file').value='';if(file)await importNotes(file);});
+for(const key of noteFields){const input=$(key.replace('_','-'));input.maxLength=MAX_NOTE_LENGTH;input.addEventListener('input',()=>{byPrefix.get(selected).notes[key]=input.value;notesStatus();renderCards();});}
+window.addEventListener('beforeunload',event=>{if(isDirty()){event.preventDefault();event.returnValue='';}});
+notesStatus();
 const number = v => v === null || !Number.isFinite(v) ? '—' : v.toLocaleString('ja-JP',{maximumFractionDigits:2});
 const percent = v => v === null || !Number.isFinite(v) ? '—' : `${(v*100).toLocaleString('ja-JP',{maximumFractionDigits:2})}%`;
 function element(tag,text,className){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(className)el.className=className;return el;}
@@ -102,7 +150,7 @@ function renderDetail(){
  $('raw-count').textContent=number(target.stats.Raw.flow_count);$('removal-rate').textContent=percent(target.stats.Raw.removal_rate);
  $('detail-image').src=target.detail_image;$('detail-image').alt=`${selected} のRaw・removed・retained比較。左は度数、右は各群内割合。`;
  $('stats').replaceChildren();for(const g of groups){const s=target.stats[g],row=element('tr'),name=element('th');name.scope='row';const dot=element('span',undefined,'dot');dot.style.background=colors[g];name.append(dot,document.createTextNode(g));row.append(name);for(const value of [number(s.flow_count),number(s.median),number(s.p95),percent(s.one_packet_rate)])row.append(element('td',value));$('stats').append(row);}
- for(const [key,id] of [['observation','observation'],['interpretation','interpretation'],['next_check','next-check']])$(id).textContent=target.notes[key]||'未記入';
+ for(const [key,id] of [['observation','observation'],['interpretation','interpretation'],['next_check','next-check']])$(id).value=target.notes[key]||'';
 }
 for(const button of document.querySelectorAll('.group'))button.addEventListener('click',()=>{group=button.dataset.group;for(const b of document.querySelectorAll('.group'))b.setAttribute('aria-pressed',String(b===button));renderCards();});
 $('search').addEventListener('input',renderCards);$('sort').addEventListener('change',renderCards);
