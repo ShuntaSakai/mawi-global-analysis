@@ -18,13 +18,14 @@ def test_embedded_notes_behavior():
     harness = r'''
 const assert=require('node:assert/strict');
 class El {
- constructor(){this.value='';this.listeners={};this.style={};this.dataset={};this.classList={toggle(){}};this.files=[];}
- addEventListener(k,f){this.listeners[k]=f;} append(){} replaceChildren(){} setAttribute(){} remove(){} click(){this.listeners.click?.();} getBoundingClientRect(){return {left:0,bottom:0,top:0};}
+ constructor(){this.value='';this.listeners={};this.style={};this.dataset={};this.classes=new Set();this.classList={toggle:(k,force)=>{const on=force===undefined?!this.classes.has(k):force;if(on)this.classes.add(k);else this.classes.delete(k);return on;},contains:k=>this.classes.has(k)};this.files=[];}
+ addEventListener(k,f){this.listeners[k]=f;} append(...items){(this.children ||= []).push(...items);} replaceChildren(...items){this.children=items;} setAttribute(k,v){(this.attributes ||= {})[k]=v;} remove(){} click(){this.listeners.click?.();} getBoundingClientRect(){return {left:0,bottom:0,top:0};}
 }
 const els=new Map(); const get=id=>{if(!els.has(id))els.set(id,new El());return els.get(id);};
 const stat={flow_count:1,median:1,p95:1,one_packet_rate:1,removal_rate:0};
 const target=prefix=>({prefix,notes:{observation:'initial',interpretation:'',next_check:''},stats:{Raw:stat,removed:stat,retained:stat},thumbnail:{},detail_image:''});
 const payload={dataset_id:'dataset',run_name:'run',prefixes:[target('a'),target('b')],references:[target('selected_union'),target('overall_ipv4')]};
+payload.prefixes[0].host_summary={Raw:{unique_endpoint_ips:12,unique_sender_ips:3},removed:{unique_endpoint_ips:2,unique_sender_ips:1},retained:{unique_endpoint_ips:10,unique_sender_ips:2}};
 get('dashboard-data').textContent=JSON.stringify(payload);get('sort').value='flow_count';
 class Template {
  constructor(source=SOURCEHTML){this.source=source;this.data={textContent:''};}
@@ -38,6 +39,19 @@ global.window={innerWidth:1200,addEventListener:(k,f)=>windowEvents[k]=f,confirm
 '''
     checks = r'''
 (async()=>{
+assert.equal(get('stats').children[0].children.length,7);
+assert.equal(get('stats').children[0].children[5].textContent,'12');
+assert.equal(get('stats').children[0].children[6].textContent,'3');
+selected='selected_union';renderDetail();assert.equal(get('stats').children[0].children[5].textContent,'—');
+selected='b';renderDetail();assert.equal(get('stats').children[0].children[6].textContent,'—');
+selected='a';renderDetail();
+get('observation').value='kept while collapsed';get('observation').listeners.input();
+const dirtyBeforeToggle=notesSnapshot();group='removed';get('search').value='a';get('sort').value='median';
+get('toggle-detail').click();assert.equal(get('detail').hidden,true);assert(get('dashboard-layout').classList.contains('detail-collapsed'));assert.equal(get('toggle-detail').attributes['aria-expanded'],'false');
+window.innerWidth=800;let scrolled=false;get('detail').scrollIntoView=()=>{scrolled=true;};card(byPrefix.get('b')).click();assert.equal(selected,'b');assert(!scrolled);assert.equal(get('detail').hidden,true);
+get('toggle-detail').click();assert.equal(get('detail').hidden,false);assert(!get('dashboard-layout').classList.contains('detail-collapsed'));assert.equal(get('toggle-detail').attributes['aria-expanded'],'true');assert.equal(get('detail-title').textContent,'b');
+assert.equal(notesSnapshot(),dirtyBeforeToggle);assert.equal(group,'removed');assert.equal(get('search').value,'a');assert.equal(get('sort').value,'median');
+window.innerWidth=1200;selected='a';get('search').value='';get('sort').value='flow_count';renderDetail();
 const special='<script>alert("x")</script></script><img src=x onerror=alert(1)>\n\' \\ & 日本語 😀\u2028\u2029';
 get('observation').value=special;get('observation').listeners.input();
 assert.equal(byPrefix.get('a').notes.observation,special);assert(isDirty());

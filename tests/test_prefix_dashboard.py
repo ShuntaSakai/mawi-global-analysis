@@ -276,3 +276,86 @@ def test_generated_csp_authorizes_exact_app_source_only(saved, tmp_path):
     assert not re.search(r'\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|eval)\s*\(', scripts[0])
     assert not re.search(r'\bnew\s+Function\b|\.innerHTML\s*=', scripts[0])
     assert not re.search(r'<(?:script|link|iframe|form)\b[^>]*(?:src|href|action)\s*=', html, re.I)
+
+
+def host_csv(path, data):
+    import csv
+    columns = ['prefix', 'group', 'flow_count', 'unique_endpoint_ips', 'unique_sender_ips', 'run_manifest_sha256']
+    rows = [dict(zip(columns, [target['prefix'], group, target['stats'][group]['flow_count'], 2, 1, data['run_manifest_sha256']]))
+            for target in data['prefixes'] for group in fl.GROUPS]
+    with path.open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader(); writer.writerows(rows)
+    return rows
+
+
+def test_optional_host_summary_and_enrichment_preserve_analysis(saved, tmp_path):
+    import copy
+    root, dataset, run, cache, _ = saved
+    original = dashboard().export_dashboard(root, dataset, run, cache, tmp_path/'original.html')
+    data = payload(original.read_text()); before = copy.deepcopy(data)
+    csv_path = tmp_path/'hosts.csv'; host_csv(csv_path, data)
+    enriched = dashboard().enrich_dashboard(original, csv_path, tmp_path/'enriched.html')
+    updated = payload(enriched.read_text())
+    for target in updated['prefixes']:
+        assert target.pop('host_summary') == {g: {'unique_endpoint_ips': 2, 'unique_sender_ips': 1} for g in fl.GROUPS}
+    assert updated == before
+    assert payload(original.read_text()) == before
+    normal = dashboard().export_dashboard(root, dataset, run, cache, tmp_path/'normal.html', host_summary=csv_path)
+    assert payload(normal.read_text()) == payload(enriched.read_text())
+    with pytest.raises(FileExistsError): dashboard().enrich_dashboard(original, csv_path, enriched)
+
+
+@pytest.mark.parametrize('issue', ['manifest', 'flow', 'negative', 'fraction', 'missing', 'duplicate', 'unknown', 'group'])
+def test_host_csv_rejects_inconsistent_or_invalid_rows(saved, tmp_path, issue):
+    import csv
+    root, dataset, run, cache, _ = saved
+    data = dashboard().build_dashboard_data(saved[-1]); data['run_manifest_sha256'] = 'a'*64
+    path = tmp_path/'hosts.csv'; rows = host_csv(path, data)
+    if issue == 'manifest': rows[0]['run_manifest_sha256'] = 'b'*64
+    elif issue == 'flow': rows[0]['flow_count'] += 1
+    elif issue == 'negative': rows[0]['unique_endpoint_ips'] = -1
+    elif issue == 'fraction': rows[0]['unique_sender_ips'] = '1.5'
+    elif issue == 'missing': rows.pop()
+    elif issue == 'duplicate': rows.append(rows[0])
+    elif issue == 'unknown': rows[0]['prefix'] = 'unknown'
+    elif issue == 'group': rows[0]['group'] = 'other'
+    with path.open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=rows[0].keys()); writer.writeheader(); writer.writerows(rows)
+    snapshot = json.dumps(data, sort_keys=True)
+    with pytest.raises(ValueError): dashboard().attach_host_summary(data, path)
+    assert json.dumps(data, sort_keys=True) == snapshot
+
+
+def test_thumbnail_axes_share_limits_and_ticks_only_within_cohort(monkeypatch):
+    import copy
+    figures = []
+    def capture(fig):
+        axis = fig.axes[0]
+        figures.append((axis.get_ylim(), list(axis.get_yticks()), axis.get_yscale()))
+        return 'data:image/png;base64,test'
+    monkeypatch.setattr(dashboard(), '_image', capture)
+    target = lambda count: {'counts': {g: [count if g == 'Raw' else 0, 0, 1] for g in fl.GROUPS}, 'notes': {'observation': 'keep'}, 'detail_image': 'unchanged'}
+    data = {'prefixes': [target(2), target(200)], 'references': [target(20000), target(400)], 'bin_labels': ['a', 'b', 'c']}
+    before = copy.deepcopy(data)
+    dashboard().align_thumbnail_axes(data)
+    assert len(figures) == 12
+    assert all(item == figures[0] for item in figures[:6])
+    assert all(item == figures[6] for item in figures[6:])
+    assert figures[0][0][1] >= 200 and figures[6][0][1] >= 20000
+    assert figures[0][0] != figures[6][0]
+    assert figures[0][2] == 'symlog'
+    for key in ('prefixes', 'references'):
+        for t in data[key]: assert len(t.pop('thumbnail')) == 3
+    assert data == before
+
+
+def test_thumbnail_axes_zero_cohort_and_few_ticks(monkeypatch):
+    figures = []
+    monkeypatch.setattr(dashboard(), '_image', lambda fig: figures.append(fig) or 'image')
+    data = {'prefixes': [{'counts': {g: [0, 0, 0] for g in fl.GROUPS}}], 'references': [], 'bin_labels': ['a', 'b', 'c']}
+    dashboard().align_thumbnail_axes(data)
+    for fig in figures:
+        axis = fig.axes[0]
+        assert axis.get_ylim() == (0, 1)
+        assert list(axis.get_yticks()) == [0, 1]

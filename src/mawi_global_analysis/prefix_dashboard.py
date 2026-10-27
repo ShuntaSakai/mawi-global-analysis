@@ -6,6 +6,7 @@ performed here. Counts and bins are consumed from FlowLengthResult unchanged.
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import re
 from io import BytesIO
@@ -200,12 +201,14 @@ def _image(fig: Figure) -> str:
         fig.clear()
 
 
-def _thumbnail(target: dict, group: str, labels: list[str]) -> str:
+def _thumbnail(target: dict, group: str, labels: list[str],
+               upper: float, ticks: list[int]) -> str:
     fig = Figure(figsize=(3.7, 1.65), layout='constrained')
     axis = fig.subplots()
     axis.bar(np.arange(len(labels)), target['counts'][group], width=.85, color=COLORS[group])
     axis.set_yscale('symlog', linthresh=1)
-    axis.set_ylim(0, max(1, axis.get_ylim()[1]))
+    axis.set_ylim(0, upper)
+    axis.set_yticks(ticks)
     indices = sorted(set([0, 1, 2, len(labels)-1]))
     axis.set_xticks(indices, [labels[i] for i in indices], fontsize=7)
     axis.tick_params(axis='y', labelsize=7)
@@ -214,8 +217,98 @@ def _thumbnail(target: dict, group: str, labels: list[str]) -> str:
     return _image(fig)
 
 
+def align_thumbnail_axes(data: dict) -> None:
+    """Regenerate small figures with a shared symlog axis per comparison cohort."""
+    for targets in (data['prefixes'], data['references']):
+        peak = max((max(target['counts'][group], default=0)
+                    for target in targets for group in GROUPS), default=0)
+        # Leave headroom and use a round decade ceiling; all-zero plots stay finite.
+        exponent = max(0, math.ceil(math.log10(peak * 1.05))) if peak else 0
+        upper = 10 ** exponent
+        step = max(1, math.ceil(exponent / 5))
+        tick_exponents = sorted(set([0, exponent, *range(0, exponent + 1, step)]))
+        ticks = [0, *[10 ** value for value in tick_exponents]]
+        for target in targets:
+            target['thumbnail'] = {
+                group: _thumbnail(target, group, data['bin_labels'], upper, ticks)
+                for group in GROUPS}
+
+
+def attach_host_summary(data: dict, path: Path) -> None:
+    """Attach supplied counts only after every row matches this dashboard's run."""
+    fields = {'prefix', 'group', 'flow_count', 'unique_endpoint_ips',
+              'unique_sender_ips', 'run_manifest_sha256'}
+    targets = {t['prefix']: t for t in data['prefixes']}
+    expected = {(prefix, group) for prefix in targets for group in GROUPS}
+    incoming = {}
+    manifest = data.get('run_manifest_sha256')
+    if not isinstance(manifest, str) or not re.fullmatch(r'[a-fA-F0-9]{64}', manifest):
+        raise ValueError('dashboardのrun manifest SHA-256が不正です')
+    with Path(path).open(encoding='utf-8-sig', newline='') as stream:
+        reader = csv.DictReader(stream)
+        if reader.fieldnames is None or len(reader.fieldnames) != len(fields) or set(reader.fieldnames) != fields:
+            raise ValueError('host summary CSVの列が一致しません')
+        for line, row in enumerate(reader, 2):
+            key = (row['prefix'], row['group'])
+            if None in row or any(v is None for v in row.values()) or key not in expected or key in incoming:
+                raise ValueError(f'host summary CSV {line}行: 対象・群・重複・列数が不正です')
+            if row['run_manifest_sha256'] != manifest:
+                raise ValueError(f'host summary CSV {line}行: run manifestが一致しません')
+            numbers = {}
+            for name in ('flow_count', 'unique_endpoint_ips', 'unique_sender_ips'):
+                value = row[name]
+                if not re.fullmatch(r'[0-9]+', value) or len(value) > 16 or int(value) > 2**53-1:
+                    raise ValueError(f'host summary CSV {line}行: {name}は非負の安全な整数が必要です')
+                numbers[name] = int(value)
+            if numbers.pop('flow_count') != targets[key[0]]['stats'][key[1]]['flow_count']:
+                raise ValueError(f'host summary CSV {line}行: flow_countが一致しません')
+            incoming[key] = numbers
+    if set(incoming) != expected:
+        raise ValueError('host summary CSVには全プレフィックスの3群が必要です')
+    for prefix, target in targets.items():
+        target['host_summary'] = {group: incoming[(prefix, group)] for group in GROUPS}
+
+
+def render_dashboard(data: dict) -> str:
+    """Render repository-owned offline UI with escaped data and exact script CSP."""
+    encoded = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+    for char, escaped in [('&', '\\u0026'), ('<', '\\u003c'), ('>', '\\u003e'),
+                          ('\u2028', '\\u2028'), ('\u2029', '\\u2029')]:
+        encoded = encoded.replace(char, escaped)
+    template = Path(__file__).with_name('prefix_dashboard.html').read_text(encoding='utf-8')
+    scripts = re.findall(r'<script>(.*?)</script>', template, re.S)
+    if len(scripts) != 1 or template.count('__DASHBOARD_SCRIPT_HASH__') != 1:
+        raise ValueError('Dashboard template must contain one application script and CSP hash slot')
+    digest = base64.b64encode(hashlib.sha256(scripts[0].encode('utf-8')).digest()).decode('ascii')
+    return template.replace('__DASHBOARD_SCRIPT_HASH__', digest).replace('__DASHBOARD_DATA__', encoded)
+
+
+def enrich_dashboard(source: Path, host_summary: Path, output: Path) -> Path:
+    """Read embedded data without executing input HTML; write a new dashboard."""
+    output = Path(output).expanduser().resolve()
+    if output.suffix.lower() != '.html':
+        raise ValueError('出力先は新しい .html ファイルを指定してください')
+    if output.exists():
+        raise FileExistsError(f'既存ファイルは上書きしません: {output}')
+    embedded = re.findall(r'<script id="dashboard-data" type="application/json">(.*?)</script>',
+                          Path(source).read_text(encoding='utf-8'), re.S)
+    if len(embedded) != 1:
+        raise ValueError('dashboard-dataが一意に見つかりません')
+    try:
+        data = json.loads(embedded[0])
+        attach_host_summary(data, host_summary)
+        html = render_dashboard(data)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError('入力HTMLのdashboard-dataが不正です') from exc
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open('x', encoding='utf-8') as stream:
+        stream.write(html)
+    return output
+
+
 def export_dashboard(root: Path, dataset_id: str, run_name: str, cache_dir: Path,
-                     output: Path, *, notes: Path | None = None) -> Path:
+                     output: Path, *, notes: Path | None = None,
+                     host_summary: Path | None = None) -> Path:
     """Export once from a matching cache; never create, modify or repair a cache."""
     output, cache_dir = Path(output).expanduser().resolve(), Path(cache_dir).expanduser().resolve()
     if output.suffix.lower() != '.html':
@@ -233,22 +326,12 @@ def export_dashboard(root: Path, dataset_id: str, run_name: str, cache_dir: Path
         raise ValueError('入力成果物は上書きできません')
     data = build_dashboard_data(result, load_notes(notes, dataset_id, run_name))
     data['run_manifest_sha256'] = sha256_file(result.inspection.manifest_path)
+    align_thumbnail_axes(data)
     for target in data['prefixes']+data['references']:
-        target['thumbnail'] = {g: _thumbnail(target, g, data['bin_labels']) for g in GROUPS}
         target['detail_image'] = _image(_comparison(target, data['bin_labels'], data['evidence'] == 'synthetic_demo'))
-    # Script-data escaping is distinct from HTML text escaping: a literal
-    # </script> must never terminate the application/json element.
-    encoded = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
-    for char, escaped in [('&', '\\u0026'), ('<', '\\u003c'), ('>', '\\u003e'),
-                          ('\u2028', '\\u2028'), ('\u2029', '\\u2029')]:
-        encoded = encoded.replace(char, escaped)
-    template = Path(__file__).with_name('prefix_dashboard.html').read_text(encoding='utf-8')
-    # CSP hashes the exact UTF-8 script text, including its boundary newlines.
-    scripts = re.findall(r'<script>(.*?)</script>', template, re.S)
-    if len(scripts) != 1 or template.count('__DASHBOARD_SCRIPT_HASH__') != 1:
-        raise ValueError('Dashboard template must contain one application script and CSP hash slot')
-    digest = base64.b64encode(hashlib.sha256(scripts[0].encode('utf-8')).digest()).decode('ascii')
-    html = template.replace('__DASHBOARD_SCRIPT_HASH__', digest).replace('__DASHBOARD_DATA__', encoded)
+    if host_summary is not None:
+        attach_host_summary(data, host_summary)
+    html = render_dashboard(data)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open('x', encoding='utf-8') as stream:
         stream.write(html)
