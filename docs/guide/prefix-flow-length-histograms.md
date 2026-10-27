@@ -40,7 +40,7 @@ native選定18、所属550,289行、一意549,990フロー、IPv4 Raw33,295,132�
 | ファイル | 標準位置 | 処理に使用する列・フィールド |
 | --- | --- | --- |
 | `run_manifest.json` | `results/<D>/<run>/` | status=success、dataset_id、config.text/hash、input.sha256、artifacts各path/row_count、cache.flows |
-| `flows.csv` | `data/<D>/processed/flows/tcp-udp-no-timeout-<fingerprint[:10]>/` | flow_id、ip_version、packet_count、src_ip、dst_ip、protocol、initial_syn_sender_ip、observed_tcp_pattern |
+| `flows.csv` | `data/<D>/processed/flows/tcp-udp-no-timeout-<fingerprint[:10]>/` | flow_id、ip_version、packet_count、src_ip、dst_ip、protocol、initial_syn_sender_ip、observed_tcp_pattern、packets_from_src、packets_from_dst |
 | `flow_manifest.json` | 上のflowsと同じディレクトリ（run.cacheに参照があればその参照を使用） | input_sha256、fingerprint、schema_version、flow_config、row_count |
 | `flow_labels.csv` | `results/<D>/<run>/` | flow_id、strict_scan_like、broad_scan_like、strict_removed、broad_removed |
 | `prefixes.csv` | 同上 | prefix、selected_for_analysis |
@@ -97,12 +97,25 @@ CSV2表、ページごとのPNG、入力manifest参照・hash・ビン境界・�
   等幅カテゴリ表示の度数・構成比であり、確率密度ではない。
 - 中央値/p95は整数packet_count別の正確な度数から線形補間する。ヒストグラム区間による近似や
   サンプリングはしない。空群はNaN、フローが0件の選定先も消さない。
+- 初回集計は `unique_endpoint_ips`（対象範囲内src/dstのdistinct IPv4数）と
+  `unique_sender_ips`（その端点方向のパケットを観測したdistinct IPv4数）も保存する。
+  方向別カウンターを検証し、外部通信相手をprefix内IPへ混入させない。
+  union・全IPv4も元の端点集合から集計し、群別・prefix別のdistinct数を加算しない。
+  0件群は両値0。定義は `ipv4-prefix-endpoints-observed-senders-v1` として記録する。
 
 RAMはチャンクサイズ、パース中の列、SQLiteの32MiBキャッシュ等に依存する。
 一時SQLiteには全flow IDと必要観測・ラベル・所属を保持するため、ディスクはデータ量に比例する。
 3,330万フローでは数GB以上の余裕が必要になる。実データの所要時間・最大使用量は未計測。
 SQLiteのsort/group-byはOSの一時ディスクも使うので、その空き容量も確認する。
+IP数の初回計算は一対象ずつSQLiteでdistinctを取り、全IP集合をPythonのRAMへ展開しない。
+`overall_ipv4` の一時表は観測IP数に応じて増え、sort/group-byにも追加のディスクを使う。
 正常終了・例外終了で作業用DBを削除する（強制終了時には残る可能性がある）。
+
+IP数を含む統計は `flow-length-exact-v2` キャッシュの既存summary表に保存する。
+キャッシュ識別情報にはIP数の定義IDを含める。`analyze_run()` の明示実行時に、v2がなければ
+保存CSVを一度追加集計し、旧v1とは別フォルダーへ保存する。v1は変更・削除しない。
+読み取り専用のHTML生成・個別図生成はv1も読めるが、存在しないIP数を0や推定値にしない。
+通常のHTML生成はv2のIP数を自動で埋め込み、追加のhost-summary CSVを必要としない。
 
 manifestにCSV内容SHA-256があれば検査する。古いrunには通常それがないため、設定hash、
 cache fingerprint、schema、行数、IDと所属整合性の検査だけで過去のバイト単位同一性は証明できない。

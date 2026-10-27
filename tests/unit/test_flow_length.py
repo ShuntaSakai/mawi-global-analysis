@@ -52,6 +52,7 @@ def saved_run(tmp_path):
         row = dict.fromkeys(FLOW_COLUMNS, 0)
         row.update(flow_id=f'f{i}', ip_version=6 if ':' in src else 4,
                    protocol=6, src_ip=src, dst_ip=dst, packet_count=n,
+                   packets_from_src=n, packets_from_dst=0,
                    initial_syn_sender_ip=src if pat != 'none' else '', observed_tcp_pattern=pat)
         rows.append(row)
         strict, broad = i in [1,4], i in [0,1,4]

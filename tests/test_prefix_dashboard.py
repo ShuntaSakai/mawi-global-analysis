@@ -73,6 +73,47 @@ def test_empty_groups_nan_statistics_and_union_are_preserved(saved):
     json.dumps(data, allow_nan=False)
 
 
+def test_initial_export_embeds_cached_ip_counts_without_external_csv(saved, tmp_path, monkeypatch):
+    root, dataset, run, cache_dir, _ = saved
+    monkeypatch.setattr(fl, '_ingest', lambda *a, **k: pytest.fail('HTML export must not recompute IPs'))
+    output = dashboard().export_dashboard(root, dataset, run, cache_dir, tmp_path/'initial.html')
+    data = payload(output.read_text())
+    target = next(t for t in data['prefixes'] if t['prefix'] == '192.0.2.0/24')
+    assert target.get('host_summary') == {
+        'Raw': {'unique_endpoint_ips': 5, 'unique_sender_ips': 3},
+        'removed': {'unique_endpoint_ips': 2, 'unique_sender_ips': 1},
+        'retained': {'unique_endpoint_ips': 3, 'unique_sender_ips': 2},
+    }
+    union = next(t for t in data['references'] if t['prefix'] == 'selected_union')
+    assert union['host_summary']['Raw'] == {'unique_endpoint_ips': 9, 'unique_sender_ips': 5}
+    assert data['host_count_definition']
+
+
+def test_conflicting_external_csv_cannot_overwrite_persisted_counts(saved, tmp_path):
+    data = dashboard().build_dashboard_data(saved[-1])
+    data['run_manifest_sha256'] = 'a'*64
+    csv_path = tmp_path/'contradiction.csv'
+    host_csv(csv_path, data)
+    import csv
+    rows = list(csv.DictReader(csv_path.open()))
+    rows[0]['unique_endpoint_ips'] = '123'
+    with csv_path.open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=rows[0]); writer.writeheader(); writer.writerows(rows)
+    snapshot = json.dumps(data, sort_keys=True)
+    with pytest.raises(ValueError, match='host|IP|一致|conflict'):
+        dashboard().attach_host_summary(data, csv_path)
+    assert json.dumps(data, sort_keys=True) == snapshot
+
+
+def test_partial_or_unversioned_persisted_host_summary_is_rejected(saved):
+    from dataclasses import replace
+    original = saved[-1]
+    for result in (replace(original, summary=original.summary.drop(columns='unique_sender_ips')),
+                   replace(original, host_count_definition=None)):
+        with pytest.raises(ValueError, match='host|IP|definition'):
+            dashboard().build_dashboard_data(result)
+
+
 def test_all_selected_prefixes_above_thirty_are_included(saved):
     from dataclasses import replace
     original = saved[-1]
@@ -281,7 +322,9 @@ def test_generated_csp_authorizes_exact_app_source_only(saved, tmp_path):
 def host_csv(path, data):
     import csv
     columns = ['prefix', 'group', 'flow_count', 'unique_endpoint_ips', 'unique_sender_ips', 'run_manifest_sha256']
-    rows = [dict(zip(columns, [target['prefix'], group, target['stats'][group]['flow_count'], 2, 1, data['run_manifest_sha256']]))
+    rows = [dict(zip(columns, [target['prefix'], group, target['stats'][group]['flow_count'],
+            target.get('host_summary', {}).get(group, {}).get('unique_endpoint_ips', 2),
+            target.get('host_summary', {}).get(group, {}).get('unique_sender_ips', 1), data['run_manifest_sha256']]))
             for target in data['prefixes'] for group in fl.GROUPS]
     with path.open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns)
@@ -298,7 +341,7 @@ def test_optional_host_summary_and_enrichment_preserve_analysis(saved, tmp_path)
     enriched = dashboard().enrich_dashboard(original, csv_path, tmp_path/'enriched.html')
     updated = payload(enriched.read_text())
     for target in updated['prefixes']:
-        assert target.pop('host_summary') == {g: {'unique_endpoint_ips': 2, 'unique_sender_ips': 1} for g in fl.GROUPS}
+        assert target['host_summary'] == next(t for t in before['prefixes'] if t['prefix'] == target['prefix'])['host_summary']
     assert updated == before
     assert payload(original.read_text()) == before
     normal = dashboard().export_dashboard(root, dataset, run, cache, tmp_path/'normal.html', host_summary=csv_path)

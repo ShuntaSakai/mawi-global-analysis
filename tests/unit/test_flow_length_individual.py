@@ -125,7 +125,7 @@ def test_corrupt_exact_cache_stops_without_silently_reprocessing(exact_result,mo
 def test_changed_source_invalidates_exact_cache(exact_result,monkeypatch):
     root,dataset,run,cache,result=exact_result
     flows=result.inspection.paths['flows']
-    frame=pd.read_csv(flows);frame.loc[0,'packet_count']=2;frame.to_csv(flows,index=False)
+    frame=pd.read_csv(flows);frame.loc[0,['packet_count','packets_from_src']]=2;frame.to_csv(flows,index=False)
     calls=[]; original=fl._ingest
     def ingest(*args,**kwargs):
         calls.append(1);return original(*args,**kwargs)

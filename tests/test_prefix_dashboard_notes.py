@@ -42,9 +42,10 @@ global.window={innerWidth:1200,addEventListener:(k,f)=>windowEvents[k]=f,confirm
 assert.equal(get('stats').children[0].children.length,7);
 assert.equal(get('stats').children[0].children[5].textContent,'12');
 assert.equal(get('stats').children[0].children[6].textContent,'3');
-selected='selected_union';renderDetail();assert.equal(get('stats').children[0].children[5].textContent,'—');
-selected='b';renderDetail();assert.equal(get('stats').children[0].children[6].textContent,'—');
+selected='selected_union';renderDetail();assert.equal(get('stats').children[0].children[5].textContent,'未集計');
+selected='b';renderDetail();assert.equal(get('stats').children[0].children[6].textContent,'未集計');
 selected='a';renderDetail();
+byPrefix.get('a').host_summary.removed.unique_sender_ips=0;renderDetail();assert.equal(get('stats').children[1].children[6].textContent,'0');
 get('observation').value='kept while collapsed';get('observation').listeners.input();
 const dirtyBeforeToggle=notesSnapshot();group='removed';get('search').value='a';get('sort').value='median';
 get('toggle-detail').click();assert.equal(get('detail').hidden,true);assert(get('dashboard-layout').classList.contains('detail-collapsed'));assert.equal(get('toggle-detail').attributes['aria-expanded'],'false');

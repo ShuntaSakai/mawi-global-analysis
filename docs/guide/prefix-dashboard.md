@@ -2,7 +2,8 @@
 
 保存済みのflow-lengthキャッシュから、単体で開けるHTMLを生成します。
 閲覧時はPython・インターネット・ローカルサーバを必要としません。
-06ノートブック、解析処理、Scan判定、フロー定義は変更しません。
+HTML生成は保存値の読み取りだけを行い、Scan判定やフロー定義を変更しません。
+IP数はフロー長の初回集計時に保存され、外部のIP集計CSVなしで自動的に埋め込まれます。
 
 ## 研究室PCで生成する
 
@@ -201,15 +202,75 @@ Phase 3では合成データを一時的なローカルHTTPサーバで開き、
 Safariと `file://` からの直接オープンは実ブラウザでは未確認です。読み込み済みページの
 オフライン編集・保存と、オフラインでのファイル直接オープンは区別してください。
 
-## 既存CSVのIP数を表示する
+## IP数を初回集計から保存する
+
+06の `analyze_run(..., exact_cache_dir=...)` が、フロー数・中央値・p95と一緒に
+`unique_endpoint_ips` と `unique_sender_ips` を集計し、既存の
+`flow_length_summary.csv`（キャッシュ内部の統計表）に保存します。
+通常のHTML生成コマンドだけでこの2列を自動的に読み込むため、追加の
+`prefix_host_summary.csv` や `--host-summary` は不要です。HTMLだけをコピーして閲覧できます。
+`flows.csv`・ラベル・membership等の元run成果物とは役割が異なります。
+
+- 観測ユニークIP数：その群のフローで、対象範囲内のsrcまたはdstとして現れたdistinct IPv4 IP数。
+- 送信観測IP数：上記IPのうち、その端点側のパケットを1件以上観測したdistinct数。
+  canonical srcだけを送信観測とせず、`packets_from_src > 0` と `packets_from_dst > 0` を使います。
+  両カウンターの非負整数性と合計=`packet_count`を検査します。
+- 個別native prefixでは両端をそれぞれ範囲検査します。外部通信相手は数えません。
+  観測されたnetwork/broadcastアドレスは機械的に除外しません。
+- `selected_union` は全選定native prefixの和集合**内の端点**をdistinctにします。
+  選定フローの外部通信相手や個別prefix値の合算ではありません。
+- `overall_ipv4` は全IPv4フローの端点をdistinctにします。IPv6端点は含めません。
+- removed/retained両群に同じIPが現れ得ます。Rawは集合和でありdistinct数の加算ではありません。
+  空群のIP数は正確な0、未集計は「未集計」です。実機数・正常性・役割の判定には使いません。
+
+定義ID `ipv4-prefix-endpoints-observed-senders-v1` を集計結果・HTML・キャッシュに記録します。
+この定義IDは `flow-length-exact-v2` キャッシュの識別情報に含まれ、run manifest SHA、
+flow manifest、元成果物のpath/size/mtimeとも対応づけられます。
+高速照合の限界と元データの存在確認は前述のとおりです。新規の元CSV本文SHAをすべて記録したと
+いう意味ではありません。定義を変える際は定義IDも更新し、旧キャッシュを使い回しません。
+
+### 旧キャッシュがある場合の一度だけの追加集計
+
+`flow-length-exact-v1` は読み取り互換を保ち、HTMLではIP数を「未集計」と表示します。
+HTML生成は勝手に全フローを読み直したり、旧キャッシュを書き換えたりしません。
+06ノートブックを既存の設定で一度再実行すると、保存済みフローCSVからIP数も集計して、
+同じキャッシュ基底内の別のハッシュ名フォルダーにv2を保存します。PCAP再解析・Scan再判定は不要です。
+以後はv2の保存値を再利用し、IP集計のための元フロー全行走査はしません。
+
+Notebookを使わず準備する場合の例です。`/absolute/path/exact-cache-base` とscratchは
+**手元の06で指定した実パス**へ置き換えてください。以下のブロック全体をシェルに貼り付けます。
+
+```bash
+PYTHONPATH=src uv run --no-sync python - <<'PY'
+from pathlib import Path
+from mawi_global_analysis.flow_length import analyze_run
+
+result = analyze_run(
+    Path('/home/s-sakai/mawi-global-analysis'),
+    '202604081400', 'scan_source_driven_removal',
+    exact_cache_dir=Path('/absolute/path/exact-cache-base'),
+    scratch_dir=Path('/absolute/path/existing-scratch'),
+)
+print(result.summary[['prefix', 'group', 'flow_count', 'unique_endpoint_ips', 'unique_sender_ips']])
+print('cache:', result.exact_counts_path.parent)
+PY
+```
+
+この準備後、上の通常のHTML生成コマンドで `--cache-dir` に同じ**基底ディレクトリ**を
+指定し、新しいHTML名へ出力します。初回はIP distinct用のSQLite処理・一時ディスクも必要です。
+実MAWIデータでの所要時間・最大使用量は未計測です。
+
+## 互換機能：既存CSVのIP数を表示する
 
 任意の `prefix_host_summary.csv` を付けると、詳細のRaw/removed/retained比較表に
-「エンドポイントIP数」「送信元IP数」を表示できます。値はCSVの
+「観測ユニークIP数」「送信観測IP数」を表示できます。値はCSVの
 `unique_endpoint_ips` と `unique_sender_ips` をそのまま表示します。
 実機の台数・活動性・通信の役割を判定する値として再解釈しません。
 これらの数え方の定義はCSV作成元を確認してください。参照用集計
-（selected_union / overall_ipv4）はCSVの対象外で、合算せず `—` と表示します。
-CSVなしのダッシュボードでも従来どおり利用でき、未提供値は `—` です。
+（selected_union / overall_ipv4）はCSVの対象外で、保存値がなければ「未集計」と表示します。
+初回集計に由来する保存値がある場合は、その参照集計値を保持します。
+CSVと既に保存されたIP数が矛盾したら、上書きや混合をせず出力前に停止します。
+CSVから旧HTMLを補完しても、保存フローから再集計した定義IDを勝手に付与しません。
 
 通常のHTML生成に `--host-summary /path/to/prefix_host_summary.csv` を追加できます。
 既存の信頼できる解析HTMLに添付する場合は、再解析せず次を実行します。

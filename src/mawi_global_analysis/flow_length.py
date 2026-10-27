@@ -23,6 +23,7 @@ import yaml
 from mawi_global_analysis.config import ExperimentConfig, load_config
 from mawi_global_analysis.flow_stage import FLOW_COLUMNS, FLOW_SCHEMA_VERSION
 from mawi_global_analysis.hashing import flow_fingerprint, flow_generation_config, sha256_file
+from mawi_global_analysis.host_counts import HOST_COUNT_DEFINITION, summarize_host_counts, validate_host_counts
 from mawi_global_analysis.membership import MEMBERSHIP_COLUMNS
 from mawi_global_analysis.prefix import CORRECTED_LEDGER_COLUMNS
 from mawi_global_analysis.scan_labels import FLOW_LABEL_COLUMNS
@@ -31,7 +32,8 @@ from mawi_global_analysis.scan_labels import FLOW_LABEL_COLUMNS
 SCHEMAS = {'flows': FLOW_COLUMNS, 'flow_labels': FLOW_LABEL_COLUMNS,
            'prefixes': CORRECTED_LEDGER_COLUMNS, 'flow_prefix_membership': MEMBERSHIP_COLUMNS}
 FLOW_USE = ('flow_id', 'ip_version', 'packet_count', 'src_ip', 'dst_ip',
-            'protocol', 'initial_syn_sender_ip', 'observed_tcp_pattern')
+            'protocol', 'initial_syn_sender_ip', 'observed_tcp_pattern',
+            'packets_from_src', 'packets_from_dst')
 GROUPS = ('Raw', 'removed', 'retained')
 CONFIG_PATH = Path(__file__).resolve().parents[2] / 'configs/scan_source_driven_removal.yaml'
 
@@ -54,6 +56,7 @@ class FlowLengthResult:
     bin_edges: list[int]
     audit: dict[str, int]
     exact_counts_path: Path | None = None
+    host_count_definition: str | None = None
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -255,7 +258,8 @@ def _insert(db: sqlite3.Connection, statement: str, rows, label: str) -> None:
 def _ingest(db: sqlite3.Connection, info: Inspection, size: int, progress) -> dict[str, int]:
     db.executescript('''
         CREATE TABLE facts (id TEXT PRIMARY KEY, ipv INTEGER, packets INTEGER,
-                            src INTEGER, dst INTEGER, pattern TEXT, syn_tcp INTEGER) WITHOUT ROWID;
+                            src INTEGER, dst INTEGER, pattern TEXT, syn_tcp INTEGER,
+                            src_sent INTEGER, dst_sent INTEGER) WITHOUT ROWID;
         CREATE TABLE labels (id TEXT PRIMARY KEY, strict_removed INTEGER,
                              broad_removed INTEGER) WITHOUT ROWID;
         CREATE TABLE membership (scope TEXT, prefix TEXT, id TEXT, sm INTEGER, dm INTEGER,
@@ -268,6 +272,12 @@ def _ingest(db: sqlite3.Connection, info: Inspection, size: int, progress) -> di
         if chunk.flow_id.eq('').any():
             raise ValueError('flows: empty flow_id')
         packets = _integers(chunk.packet_count, 'flows.packet_count', 1)
+        src_packets = _integers(chunk.packets_from_src, 'flows.packets_from_src')
+        dst_packets = _integers(chunk.packets_from_dst, 'flows.packets_from_dst')
+        # Subtraction after the upper-bound check avoids int64 addition overflow.
+        if ((src_packets > packets).any() or (dst_packets > packets).any()
+                or (src_packets != packets-dst_packets).any()):
+            raise ValueError('flows: directional packets_from_src + packets_from_dst != packet_count')
         ipv = _integers(chunk.ip_version, 'flows.ip_version')
         if not ipv.isin([4, 6]).all():
             raise ValueError('flows.ip_version must be 4 or 6')
@@ -285,8 +295,9 @@ def _ingest(db: sqlite3.Connection, info: Inspection, size: int, progress) -> di
         for key, (low, high) in targets.items():
             expected[key] += int((src_series.between(low, high) | dst_series.between(low, high)).sum())
         syn_tcp = (chunk.protocol.eq('6') & chunk.initial_syn_sender_ip.ne('')).astype(int)
-        _insert(db, 'INSERT INTO facts VALUES (?,?,?,?,?,?,?)',
-                zip(chunk.flow_id, ipv, packets, src, dst, chunk.observed_tcp_pattern, syn_tcp), 'flows')
+        _insert(db, 'INSERT INTO facts VALUES (?,?,?,?,?,?,?,?,?)',
+                zip(chunk.flow_id, ipv, packets, src, dst, chunk.observed_tcp_pattern,
+                    syn_tcp, src_packets.gt(0).astype(int), dst_packets.gt(0).astype(int)), 'flows')
     for chunk in _chunks(info, 'flow_labels', FLOW_LABEL_COLUMNS, size, progress):
         flags = {name: _bools(chunk[name], f'labels.{name}') for name in FLOW_LABEL_COLUMNS[1:]}
         if (flags['strict_removed'] & ~flags['broad_removed']).any():
@@ -377,7 +388,12 @@ def _summarize(db: sqlite3.Connection, info: Inspection):
             hist.extend(dict(prefix=prefix, group=group, lower=lo, upper=hi,
                 flow_count=count, proportion=count/n if n else math.nan)
                 for lo, hi, count in zip(edges, edges[1:], bins))
-    return pd.DataFrame(summary), pd.DataFrame(hist), edges
+    summary = pd.DataFrame(summary)
+    hosts = summarize_host_counts(db, info.selected_prefixes)
+    summary['unique_endpoint_ips'] = [hosts[p, g][0] for p, g in zip(summary.prefix, summary.group)]
+    summary['unique_sender_ips'] = [hosts[p, g][1] for p, g in zip(summary.prefix, summary.group)]
+    validate_host_counts(summary, HOST_COUNT_DEFINITION, info.selected_prefixes)
+    return summary, pd.DataFrame(hist), edges
 
 
 def analyze_run(root: Path, dataset_id: str, run_name: str, *, chunksize: int = 100_000,
@@ -421,7 +437,7 @@ def analyze_run(root: Path, dataset_id: str, run_name: str, *, chunksize: int = 
                                          summary, histogram, edges, audit)
         finally:
             db.close()
-    return FlowLengthResult(info, summary, histogram, edges, audit, exact_path)
+    return FlowLengthResult(info, summary, histogram, edges, audit, exact_path, HOST_COUNT_DEFINITION)
 
 
 def make_demo_run(root: Path) -> tuple[str, str]:
@@ -455,6 +471,7 @@ def make_demo_run(root: Path) -> tuple[str, str]:
         row = dict.fromkeys(FLOW_COLUMNS, 0)
         row.update(flow_id=f'demo-{i}', ip_version=6 if ':' in src else 4,
                    protocol=6, src_ip=src, dst_ip=dst, packet_count=count,
+                   packets_from_src=count, packets_from_dst=0,
                    initial_syn_sender_ip=src if pattern != 'none' else '',
                    observed_tcp_pattern=pattern)
         rows.append(row)

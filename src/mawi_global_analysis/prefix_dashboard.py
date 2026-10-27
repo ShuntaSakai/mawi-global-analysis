@@ -23,6 +23,7 @@ import pandas as pd
 from mawi_global_analysis.flow_length import FlowLengthResult, GROUPS
 from mawi_global_analysis.flow_length_cache import load_cached_run
 from mawi_global_analysis.hashing import sha256_file
+from mawi_global_analysis.host_counts import HOST_COUNT_COLUMNS, validate_host_counts
 
 COLORS = {'Raw': '#4477AA', 'removed': '#CC6677', 'retained': '#228833'}
 REFERENCES = ('selected_union', 'overall_ipv4')
@@ -96,6 +97,7 @@ def build_dashboard_data(result: FlowLengthResult, notes: dict | None = None) ->
     if not prefixes or len(targets) != len(set(targets)):
         _invalid('missing or duplicate selected prefixes')
     summary, histogram = result.summary, result.histogram
+    has_hosts = validate_host_counts(summary, result.host_count_definition, prefixes)
     if not {'prefix', 'group', *STAT_FIELDS}.issubset(summary.columns):
         _invalid('missing summary columns')
     if not {'prefix', 'group', 'lower', 'upper', 'flow_count', 'proportion'}.issubset(histogram.columns):
@@ -143,8 +145,13 @@ def build_dashboard_data(result: FlowLengthResult, notes: dict | None = None) ->
             _same_rate(stats[group]['removal_rate'], removed/raw if raw else None, 'removed / Raw')
         cards.append({'prefix': prefix, 'stats': stats, 'counts': counts,
                       'notes': {key: (notes or {}).get(prefix, {}).get(key, '') for key in NOTE_FIELDS}})
+        if has_hosts:
+            cards[-1]['host_summary'] = {
+                group: {field: int(summary.loc[summary.prefix.eq(prefix) & summary.group.eq(group), field].iloc[0])
+                        for field in HOST_COUNT_COLUMNS} for group in GROUPS}
     manifest = result.inspection.manifest
     return {'schema_version': 1, 'dataset_id': manifest['dataset_id'],
+            'host_count_definition': result.host_count_definition,
             'run_name': result.inspection.manifest_path.parent.name,
             'evidence': manifest.get('evidence_level', 'saved_artifact_analysis'),
             'config_sha256': manifest['config']['hash'],
@@ -265,6 +272,10 @@ def attach_host_summary(data: dict, path: Path) -> None:
             incoming[key] = numbers
     if set(incoming) != expected:
         raise ValueError('host summary CSVには全プレフィックスの3群が必要です')
+    for prefix, target in targets.items():
+        existing = target.get('host_summary')
+        if existing is not None and existing != {g: incoming[prefix, g] for g in GROUPS}:
+            raise ValueError(f'host IP summary conflict: 保存済み集計とCSVが一致しません: {prefix}')
     for prefix, target in targets.items():
         target['host_summary'] = {group: incoming[(prefix, group)] for group in GROUPS}
 
