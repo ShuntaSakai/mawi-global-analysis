@@ -16,10 +16,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--output', type=Path, required=True, help='New .html file outside the cache')
     parser.add_argument('--notes', type=Path, help='Optional experiment-scoped notes JSON')
     parser.add_argument('--host-summary', type=Path, help='Optional run-matched prefix host summary CSV')
+    parser.add_argument('--ip-behavior-bundle', type=Path, help='Validated IP behavior bundle directory')
     args = parser.parse_args(argv)
     try:
         output = export_dashboard(args.root, args.dataset, args.run, args.cache_dir,
-                                  args.output, notes=args.notes, host_summary=args.host_summary)
+                                  args.output, notes=args.notes, host_summary=args.host_summary,
+                                  ip_behavior_bundle=args.ip_behavior_bundle)
     except (OSError, ValueError) as exc:
         parser.exit(2, f'HTMLを生成できません: {exc}\n再集計・cache上書きは行っていません。\n')
     print(f'HTML: {output}')

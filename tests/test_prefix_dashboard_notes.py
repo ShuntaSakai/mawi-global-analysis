@@ -26,6 +26,7 @@ const stat={flow_count:1,median:1,p95:1,one_packet_rate:1,removal_rate:0};
 const target=prefix=>({prefix,notes:{observation:'initial',interpretation:'',next_check:''},stats:{Raw:stat,removed:stat,retained:stat},thumbnail:{},detail_image:''});
 const payload={dataset_id:'dataset',run_name:'run',prefixes:[target('a'),target('b')],references:[target('selected_union'),target('overall_ipv4')]};
 payload.prefixes[0].host_summary={Raw:{unique_endpoint_ips:12,unique_sender_ips:3},removed:{unique_endpoint_ips:2,unique_sender_ips:1},retained:{unique_endpoint_ips:10,unique_sender_ips:2}};
+payload.prefixes[0].ip_behavior={ips:[{ip:'192.0.2.1',groups:Object.fromEntries(['Raw','removed','retained'].map(g=>[g,{flow_count:g==='retained'?0:1,sent_packets:g==='retained'?0:2,received_packets:0,sent_frame_bytes:120,received_frame_bytes:0,tcp_sent_packets:g==='retained'?0:2,udp_sent_packets:0,plain_syn_sent_count_observed_post_init:g==='retained'?0:1,synack_sent_count_observed_post_init:0,rst_sent_count_observed_post_init:0,tcp_syn_attempt_flows:g==='retained'?0:1,tcp_syn_receiver_flows:0,tcp_synack_response_flows:0,tcp_rst_response_flows:0,tcp_payload_observed_flows:0,unique_peer_ips:g==='retained'?0:1,unique_tcp_peer_ips:g==='retained'?0:1,unique_udp_peer_ips:0,ports:[],port_summary:{}}]))}]};
 get('dashboard-data').textContent=JSON.stringify(payload);get('sort').value='flow_count';
 class Template {
  constructor(source=SOURCEHTML){this.source=source;this.data={textContent:''};}
@@ -39,6 +40,15 @@ global.window={innerWidth:1200,addEventListener:(k,f)=>windowEvents[k]=f,confirm
 '''
     checks = r'''
 (async()=>{
+assert.equal(get('ip-list').children.length,1);
+get('ip-list').children[0].children[0].children[0].click();
+assert(get('ip-metrics').textContent.includes('plain SYN'));
+assert(get('ip-metrics').textContent.includes('送信パケット 2'));
+group='retained';renderIPBehavior();assert(get('ip-metrics').textContent.includes('この群では対象フローを観測していません'));
+get('ip-search').value='no-match';renderIPBehavior();assert.equal(get('ip-list').children.length,0);
+get('ip-search').value='';group='Raw';renderIPBehavior();
+selected='selected_union';renderDetail();assert(get('ip-status').textContent.includes('未集計'));
+selected='a';renderDetail();
 assert.equal(get('stats').children[0].children.length,7);
 assert.equal(get('stats').children[0].children[5].textContent,'12');
 assert.equal(get('stats').children[0].children[6].textContent,'3');

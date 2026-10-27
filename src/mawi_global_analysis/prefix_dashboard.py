@@ -12,6 +12,8 @@ import re
 from io import BytesIO
 import json
 import math
+import os
+import tempfile
 from numbers import Integral, Real
 from pathlib import Path
 
@@ -311,15 +313,13 @@ def enrich_dashboard(source: Path, host_summary: Path, output: Path) -> Path:
         html = render_dashboard(data)
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError('入力HTMLのdashboard-dataが不正です') from exc
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open('x', encoding='utf-8') as stream:
-        stream.write(html)
-    return output
+    return _write_new_dashboard(output,html)
 
 
 def export_dashboard(root: Path, dataset_id: str, run_name: str, cache_dir: Path,
                      output: Path, *, notes: Path | None = None,
-                     host_summary: Path | None = None) -> Path:
+                     host_summary: Path | None = None,
+                     ip_behavior_bundle: Path | None = None) -> Path:
     """Export once from a matching cache; never create, modify or repair a cache."""
     output, cache_dir = Path(output).expanduser().resolve(), Path(cache_dir).expanduser().resolve()
     if output.suffix.lower() != '.html':
@@ -342,8 +342,59 @@ def export_dashboard(root: Path, dataset_id: str, run_name: str, cache_dir: Path
         target['detail_image'] = _image(_comparison(target, data['bin_labels'], data['evidence'] == 'synthetic_demo'))
     if host_summary is not None:
         attach_host_summary(data, host_summary)
+    if ip_behavior_bundle is not None:
+        bundle=Path(ip_behavior_bundle)
+        attach_ip_behavior(data,bundle/'prefix_ip_behavior.csv',bundle/'prefix_ip_ports.csv',bundle/'ip_behavior_manifest.json')
     html = render_dashboard(data)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open('x', encoding='utf-8') as stream:
-        stream.write(html)
+    return _write_new_dashboard(output,html)
+
+
+def attach_ip_behavior(data: dict, behavior_csv: Path, ports_csv: Path,
+                       manifest: Path, *, top_k: int = 10) -> None:
+    """Reusable attachment for an existing HTML or exact-cache export payload."""
+    from mawi_global_analysis.prefix_ip_behavior import load_bundle
+    try:
+        payload=load_bundle(data,behavior_csv,ports_csv,manifest,top_k)
+    except (KeyError,TypeError,json.JSONDecodeError) as exc:
+        raise ValueError('IP behavior bundle is incomplete or malformed') from exc
+    for target in data['prefixes']:
+        target['ip_behavior']=payload[target['prefix']]
+
+
+def enrich_ip_behavior(source: Path, behavior_csv: Path, ports_csv: Path,
+                       manifest: Path, output: Path, *, top_k: int = 10) -> Path:
+    output=Path(output).resolve()
+    if output.exists():
+        raise FileExistsError(f'既存ファイルは上書きしません: {output}')
+    if output.suffix.lower()!='.html':
+        raise ValueError('出力先は新しい .html ファイルを指定してください')
+    embedded=re.findall(r'<script id="dashboard-data" type="application/json">(.*?)</script>',Path(source).read_text(encoding='utf-8'),re.S)
+    if len(embedded)!=1:
+        raise ValueError('dashboard-dataが一意に見つかりません')
+    try:
+        data=json.loads(embedded[0])
+        attach_ip_behavior(data,behavior_csv,ports_csv,manifest,top_k=top_k)
+        html=render_dashboard(data)
+    except (KeyError,TypeError,json.JSONDecodeError) as exc:
+        raise ValueError('入力HTMLのdashboard-dataが不正です') from exc
+    return _write_new_dashboard(output,html)
+
+
+def _write_new_dashboard(output: Path, html: str) -> Path:
+    """Publish complete UTF-8 HTML atomically without replacing an existing path."""
+    output.parent.mkdir(parents=True,exist_ok=True)
+    temporary=None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=output.parent,
+                                         prefix='.ip-dashboard-',delete=False) as stream:
+            temporary=Path(stream.name)
+            stream.write(html)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Same-filesystem hard link publishes complete bytes atomically and
+        # refuses existing destinations, including concurrently created ones.
+        os.link(temporary,output)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return output

@@ -46,6 +46,13 @@ textarea{font:inherit;width:100%;min-height:90px;resize:vertical;border:1px soli
 <div class="detail-body"><div class="plot-head"><span class="hint">左：度数 / 右：各群内の割合</span><button id="zoom" class="small-button">グラフを拡大</button></div>
 <img id="detail-image" class="plot" alt="">
 <div class="table-wrap"><table><thead><tr><th scope="col">群</th><th scope="col">フロー数</th><th scope="col">中央値</th><th scope="col">p95</th><th scope="col">1パケット率</th><th scope="col">観測ユニークIP数</th><th scope="col">送信観測IP数</th></tr></thead><tbody id="stats"></tbody></table></div><p class="hint" id="host-count-note"></p>
+<section id="ip-behavior" aria-label="送信観測IPの通信挙動" style="border-top:1px solid #dbe8ec;padding-top:18px;margin:18px 0">
+<h3>送信観測IP一覧 → 送信挙動詳細</h3><p id="ip-status" class="hint" aria-live="polite"></p>
+<div><label>IP検索 <input id="ip-search" type="search" placeholder="IPv4アドレス"></label> <label>並べ替え <select id="ip-sort"><option value="sent_packets">送信パケット順</option><option value="received_packets">受信パケット順</option><option value="unique_peer_ips">相手IP数順</option><option value="ip">IP昇順</option></select></label></div>
+<div class="table-wrap"><table><thead><tr><th>IP（選択）</th><th>送信packet</th><th>受信packet</th><th>送信frame bytes</th><th>受信frame bytes</th><th>TCP / UDP送信率</th></tr></thead><tbody id="ip-list"></tbody></table></div>
+<h3 id="ip-title"></h3><p id="ip-metrics" style="white-space:pre-wrap"></p><div id="ip-ports"></div>
+<p class="definition">Rawで1件以上送信を観測したIP集合を3群で固定。群は上部で切替。canonical src/dstは最初の観測方向です。TCPフラグ数は最初のplain SYN以降（initial SYNを含む）の方向別観測で、全ACK・FIN・PSHや完全な送信フラグ分布ではありません。ペイロードはフロー全体の観測です。UDPの開始側・client/serverは断定しません。同一IPが両端の場合はIPフロー数を1とし、送信量・受信量は両端を合計。localは対象IP側、peerは相手側ポートで、両側のフロー数は合算しません。非送信IPの受信コホート分析は次段階です。</p>
+</section>
 <div class="note-grid"><div class="note"><h3><label for="observation">観測事実</label></h3><textarea id="observation" placeholder="未記入"></textarea></div><div class="note"><h3><label for="interpretation">考察・仮説</label></h3><textarea id="interpretation" placeholder="未記入"></textarea></div><div class="note"><h3><label for="next-check">追加調査事項</label></h3><textarea id="next-check" placeholder="未記入"></textarea></div></div>
 <p class="definition">removed は Broad Scan-like の除外対象、retained は除外後に残ったフローです。Raw = removed + retained。割合の分母は各群の全フロー数です。共通ビンは幅の異なる区間を等間隔に並べたもので、確率密度ではありません。観測パターンや分布だけで攻撃・正常を判定しません。</p></div>
 </section>
@@ -193,15 +200,50 @@ function renderCards(){
  $('prefix-cards').replaceChildren(...visible.map(card));if(!visible.length)$('prefix-cards').append(element('p','一致するプレフィックスはありません。選択中の詳細は保持されます。','empty'));
  $('reference-cards').replaceChildren(...data.references.map(card));$('count').textContent=`${visible.length} / ${data.prefixes.length} 件`;
 }
+let selectedIP = '';
+function renderIPBehavior(){
+ const target=byPrefix.get(selected),payload=target.ip_behavior;
+ $('ip-list').replaceChildren();$('ip-ports').replaceChildren();$('ip-title').textContent='';$('ip-metrics').textContent='';
+ if(!payload){$('ip-status').textContent='未集計：この対象のIP個別データはありません。';return;}
+ $('ip-status').textContent=`Raw送信観測IP ${payload.ips.length}件 · 表示群 ${group} · 送信0のIPも母集団に保持`;
+ const key=$('ip-sort').value || 'sent_packets',query=$('ip-search').value.trim();
+ const numericIP=ip=>ip.split('.').reduce((a,b)=>a*256+Number(b),0);
+ const ips=payload.ips.filter(item=>item.ip.includes(query)).slice().sort((a,b)=>(key==='ip'?0:b.groups[group][key]-a.groups[group][key]) || numericIP(a.ip)-numericIP(b.ip));
+ if(!ips.some(item=>item.ip===selectedIP))selectedIP=ips[0]?.ip || '';
+ for(const item of ips){
+  const m=item.groups[group],row=element('tr'),cell=element('td'),button=element('button',item.ip,'small-button');
+  button.setAttribute('aria-pressed',String(item.ip===selectedIP));button.addEventListener('click',()=>{selectedIP=item.ip;renderIPBehavior();});cell.append(button);row.append(cell);
+  for(const value of [number(m.sent_packets),number(m.received_packets),number(m.sent_frame_bytes),number(m.received_frame_bytes),m.sent_packets?`${percent(m.tcp_sent_packets/m.sent_packets)} / ${percent(m.udp_sent_packets/m.sent_packets)}`:'送信未観測'])row.append(element('td',value));
+  $('ip-list').append(row);
+ }
+ const item=ips.find(item=>item.ip===selectedIP);if(!item){$('ip-metrics').textContent=payload.ips.length?'検索条件に一致するIPがありません。':'このプレフィックスではRaw送信IPを観測していません。';return;}
+ const m=item.groups[group];$('ip-title').textContent=`${item.ip} · ${group}`;
+ $('ip-metrics').textContent=(m.flow_count?'':'この群では対象フローを観測していません。\n')+
+  `フロー ${number(m.flow_count)} · 送信パケット ${number(m.sent_packets)} · 受信パケット ${number(m.received_packets)}\n`+
+  `TCP / UDP送信パケット ${number(m.tcp_sent_packets)} / ${number(m.udp_sent_packets)}\n`+
+  `最初のplain SYN以降の送信観測：plain SYN ${number(m.plain_syn_sent_count_observed_post_init)} · SYN-ACK ${number(m.synack_sent_count_observed_post_init)} · RST ${number(m.rst_sent_count_observed_post_init)}\n`+
+  `TCP接続試行側 / 応答側フロー ${number(m.tcp_syn_attempt_flows)} / ${number(m.tcp_syn_receiver_flows)} · 応答側SYN-ACK / RSTフロー ${number(m.tcp_synack_response_flows)} / ${number(m.tcp_rst_response_flows)}\n`+
+  `フロー全体のTCPペイロード観測 ${number(m.tcp_payload_observed_flows)} · 相手IP数 全体 / TCP / UDP ${number(m.unique_peer_ips)} / ${number(m.unique_tcp_peer_ips)} / ${number(m.unique_udp_peer_ips)}\n`+
+  (m.tcp_flow_count && !m.tcp_syn_attempt_flows && !m.tcp_syn_receiver_flows?'このIPではplain SYNに基づくTCP役割を観測していません。':'');
+ for(const [name,total] of Object.entries(m.port_summary)){
+  const [protocol,side]=name.split('/');$('ip-ports').append(element('h3',`${protocol} ${side}ポート · ${total.shown_keys}/${total.total_keys}キー表示 · 省略 ${total.omitted_keys} · 全件送信packet ${number(total.sent_packets)} · 端点フロー合計 ${number(total.endpoint_flow_count)}`));
+  const entries=m.ports.filter(p=>p.protocol===protocol && p.port_side===side);
+  if(!entries.length){$('ip-ports').append(element('p','この群では該当するポートを観測していません。','hint'));continue;}
+  const table=element('table'),head=element('tr');for(const label of ['port','観測役割','フロー数','送信packet'])head.append(element('th',label));table.append(head);
+  for(const port of entries){const row=element('tr');for(const value of [port.port,port.observed_role,number(port.flow_count),number(port.sent_packets)])row.append(element('td',String(value)));table.append(row);}$('ip-ports').append(table);
+ }
+}
+$('ip-search').addEventListener('input',renderIPBehavior);$('ip-sort').addEventListener('change',renderIPBehavior);
 function renderDetail(){
  const target=byPrefix.get(selected);$('detail-title').textContent=selected;$('detail-kind').textContent=data.references.includes(target)?'REFERENCE / 参照用集計':'SELECTED PREFIX / 選択中';
  $('raw-count').textContent=number(target.stats.Raw.flow_count);$('removal-rate').textContent=percent(target.stats.Raw.removal_rate);
  $('detail-image').src=target.detail_image;$('detail-image').alt=`${selected} のRaw・removed・retained比較。左は度数、右は各群内割合。`;
  $('stats').replaceChildren();for(const g of groups){const s=target.stats[g],row=element('tr'),name=element('th');name.scope='row';const dot=element('span',undefined,'dot');dot.style.background=colors[g];name.append(dot,document.createTextNode(g));row.append(name);for(const value of [number(s.flow_count),number(s.median),number(s.p95),percent(s.one_packet_rate),hostNumber(target.host_summary?.[g]?.unique_endpoint_ips),hostNumber(target.host_summary?.[g]?.unique_sender_ips)])row.append(element('td',value));$('stats').append(row);}
  $('host-count-note').textContent = !target.host_summary ? '未集計：この保存結果にはIP数がありません。初回の追加集計で保存できます。欠測を0や推定値に置き換えません。' : data.host_count_definition ? '初回のフロー集計で保存した値です。観測ユニークIP数は対象範囲内で送信元または宛先に現れたIP数、送信観測IP数はその方向のパケットを観測したIP数です。selected_unionは選定プレフィックスの和集合内、overall_ipv4はIPv4全体が対象です。実機数や正常性を示す値ではなく、群別のユニーク数は単純合算できません。' : '追加CSVの供給値です。集計定義はCSV作成元を確認してください。実機数・活動性の判定ではありません。';
+ renderIPBehavior();
  for(const [key,id] of [['observation','observation'],['interpretation','interpretation'],['next_check','next-check']])$(id).value=target.notes[key]||'';
 }
-for(const button of document.querySelectorAll('.group'))button.addEventListener('click',()=>{group=button.dataset.group;for(const b of document.querySelectorAll('.group'))b.setAttribute('aria-pressed',String(b===button));renderCards();});
+for(const button of document.querySelectorAll('.group'))button.addEventListener('click',()=>{group=button.dataset.group;for(const b of document.querySelectorAll('.group'))b.setAttribute('aria-pressed',String(b===button));renderCards();renderIPBehavior();});
 $('toggle-detail').addEventListener('click',()=>{
  const collapsed=$('dashboard-layout').classList.toggle('detail-collapsed');
  $('detail').hidden=collapsed;
