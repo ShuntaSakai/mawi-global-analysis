@@ -1,0 +1,673 @@
+{
+  "evidence": "SYNTHETIC PCAP only; no real MAWI data validation",
+  "input": "/Users/shunta/mawi-global-analysis/tests/fixtures/pcaps/tcp_patterns.pcap",
+  "dataset": "synthetic-agurim-prime-20261030",
+  "conditions": {
+    "agurim-pcap": {
+      "method": "agurim",
+      "run_manifest": "/Users/shunta/mawi-global-analysis/results/synthetic-agurim-prime-20261030/agurim-pcap/run_manifest.json",
+      "candidate_count": 12,
+      "selected_native_prefixes": [
+        "192.0.2.10/32",
+        "192.0.2.20/32",
+        "192.0.2.30/32",
+        "192.0.2.40/32",
+        "192.0.2.50/32",
+        "192.0.2.60/32",
+        "198.51.100.10/32",
+        "198.51.100.20/32",
+        "198.51.100.30/32",
+        "198.51.100.40/32",
+        "198.51.100.50/32",
+        "198.51.100.60/32"
+      ],
+      "normalized_prefixes": [
+        "192.0.2.0/24",
+        "198.51.100.0/24"
+      ],
+      "histogram_spec": {
+        "bin_edges": [
+          1,
+          2,
+          3,
+          4,
+          8,
+          16,
+          32,
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048,
+          4096,
+          8192,
+          16384,
+          32768,
+          65536,
+          131072,
+          262144,
+          524288,
+          1048576,
+          9223372036854775808
+        ],
+        "count_axis_upper": 10,
+        "count_scale": "log1p",
+        "proportion_axis_upper": 100,
+        "x_scale": "equal_width_integer_intervals"
+      },
+      "references": [
+        {
+          "prefix": "selected_union",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "prefix": "overall_ipv4",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "audit": {
+        "flow_rows": 7,
+        "selected_native_prefix_count": 12,
+        "normalized_prefix_count": 2,
+        "normalized_membership_rows": 12
+      },
+      "candidate_weight_totals": {
+        "bytes": 846,
+        "packets": 15
+      },
+      "html": "/Users/shunta/mawi-global-analysis/examples/agurim-prime-synthetic-20261030/agurim-24-raw.html"
+    },
+    "flow": {
+      "method": "agurim-prime",
+      "run_manifest": "/Users/shunta/mawi-global-analysis/results/synthetic-agurim-prime-20261030/agurim-prime-flow/run_manifest.json",
+      "candidate_count": 6,
+      "selected_native_prefixes": [
+        "192.0.2.10/32",
+        "192.0.2.20/32",
+        "192.0.2.30/32",
+        "192.0.2.40/32",
+        "192.0.2.50/32",
+        "192.0.2.60/32",
+        "198.51.100.10/32",
+        "198.51.100.20/32",
+        "198.51.100.30/32",
+        "198.51.100.40/32",
+        "198.51.100.50/32",
+        "198.51.100.60/32"
+      ],
+      "normalized_prefixes": [
+        "192.0.2.0/24",
+        "198.51.100.0/24"
+      ],
+      "histogram_spec": {
+        "bin_edges": [
+          1,
+          2,
+          3,
+          4,
+          8,
+          16,
+          32,
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048,
+          4096,
+          8192,
+          16384,
+          32768,
+          65536,
+          131072,
+          262144,
+          524288,
+          1048576,
+          9223372036854775808
+        ],
+        "count_axis_upper": 10,
+        "count_scale": "log1p",
+        "proportion_axis_upper": 100,
+        "x_scale": "equal_width_integer_intervals"
+      },
+      "references": [
+        {
+          "prefix": "selected_union",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "prefix": "overall_ipv4",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "audit": {
+        "flow_rows": 7,
+        "selected_native_prefix_count": 12,
+        "normalized_prefix_count": 2,
+        "normalized_membership_rows": 12
+      },
+      "candidate_weight_totals": {
+        "discounted_bytes": 711,
+        "discounted_packets": 13,
+        "discounted_flow_count": 6
+      },
+      "html": "/Users/shunta/mawi-global-analysis/examples/agurim-prime-synthetic-20261030/agurim-prime-24-raw.html"
+    },
+    "byte": {
+      "method": "agurim-canonical-byte",
+      "run_manifest": "/Users/shunta/mawi-global-analysis/results/synthetic-agurim-prime-20261030/agurim-prime-byte/run_manifest.json",
+      "candidate_count": 6,
+      "selected_native_prefixes": [
+        "192.0.2.10/32",
+        "192.0.2.20/32",
+        "192.0.2.30/32",
+        "192.0.2.40/32",
+        "192.0.2.50/32",
+        "192.0.2.60/32",
+        "198.51.100.10/32",
+        "198.51.100.20/32",
+        "198.51.100.30/32",
+        "198.51.100.40/32",
+        "198.51.100.50/32",
+        "198.51.100.60/32"
+      ],
+      "normalized_prefixes": [
+        "192.0.2.0/24",
+        "198.51.100.0/24"
+      ],
+      "histogram_spec": {
+        "bin_edges": [
+          1,
+          2,
+          3,
+          4,
+          8,
+          16,
+          32,
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048,
+          4096,
+          8192,
+          16384,
+          32768,
+          65536,
+          131072,
+          262144,
+          524288,
+          1048576,
+          9223372036854775808
+        ],
+        "count_axis_upper": 10,
+        "count_scale": "log1p",
+        "proportion_axis_upper": 100,
+        "x_scale": "equal_width_integer_intervals"
+      },
+      "references": [
+        {
+          "prefix": "selected_union",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "prefix": "overall_ipv4",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "audit": {
+        "flow_rows": 7,
+        "selected_native_prefix_count": 12,
+        "normalized_prefix_count": 2,
+        "normalized_membership_rows": 12
+      },
+      "candidate_weight_totals": {
+        "discounted_bytes": 711,
+        "discounted_packets": 13
+      },
+      "html": "/Users/shunta/mawi-global-analysis/examples/agurim-prime-synthetic-20261030/canonical-byte-24-raw.html"
+    },
+    "packet": {
+      "method": "agurim-canonical-packet",
+      "run_manifest": "/Users/shunta/mawi-global-analysis/results/synthetic-agurim-prime-20261030/agurim-prime-packet/run_manifest.json",
+      "candidate_count": 6,
+      "selected_native_prefixes": [
+        "192.0.2.10/32",
+        "192.0.2.20/32",
+        "192.0.2.30/32",
+        "192.0.2.40/32",
+        "192.0.2.50/32",
+        "192.0.2.60/32",
+        "198.51.100.10/32",
+        "198.51.100.20/32",
+        "198.51.100.30/32",
+        "198.51.100.40/32",
+        "198.51.100.50/32",
+        "198.51.100.60/32"
+      ],
+      "normalized_prefixes": [
+        "192.0.2.0/24",
+        "198.51.100.0/24"
+      ],
+      "histogram_spec": {
+        "bin_edges": [
+          1,
+          2,
+          3,
+          4,
+          8,
+          16,
+          32,
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048,
+          4096,
+          8192,
+          16384,
+          32768,
+          65536,
+          131072,
+          262144,
+          524288,
+          1048576,
+          9223372036854775808
+        ],
+        "count_axis_upper": 10,
+        "count_scale": "log1p",
+        "proportion_axis_upper": 100,
+        "x_scale": "equal_width_integer_intervals"
+      },
+      "references": [
+        {
+          "prefix": "selected_union",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "prefix": "overall_ipv4",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "audit": {
+        "flow_rows": 7,
+        "selected_native_prefix_count": 12,
+        "normalized_prefix_count": 2,
+        "normalized_membership_rows": 12
+      },
+      "candidate_weight_totals": {
+        "discounted_bytes": 711,
+        "discounted_packets": 13
+      },
+      "html": "/Users/shunta/mawi-global-analysis/examples/agurim-prime-synthetic-20261030/canonical-packet-24-raw.html"
+    },
+    "unit-packet": {
+      "method": "agurim-unit-packet-probe",
+      "run_manifest": "/Users/shunta/mawi-global-analysis/results/synthetic-agurim-prime-20261030/agurim-prime-unit-packet/run_manifest.json",
+      "candidate_count": 6,
+      "selected_native_prefixes": [
+        "192.0.2.10/32",
+        "192.0.2.20/32",
+        "192.0.2.30/32",
+        "192.0.2.40/32",
+        "192.0.2.50/32",
+        "192.0.2.60/32",
+        "198.51.100.10/32",
+        "198.51.100.20/32",
+        "198.51.100.30/32",
+        "198.51.100.40/32",
+        "198.51.100.50/32",
+        "198.51.100.60/32"
+      ],
+      "normalized_prefixes": [
+        "192.0.2.0/24",
+        "198.51.100.0/24"
+      ],
+      "histogram_spec": {
+        "bin_edges": [
+          1,
+          2,
+          3,
+          4,
+          8,
+          16,
+          32,
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048,
+          4096,
+          8192,
+          16384,
+          32768,
+          65536,
+          131072,
+          262144,
+          524288,
+          1048576,
+          9223372036854775808
+        ],
+        "count_axis_upper": 10,
+        "count_scale": "log1p",
+        "proportion_axis_upper": 100,
+        "x_scale": "equal_width_integer_intervals"
+      },
+      "references": [
+        {
+          "prefix": "selected_union",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "prefix": "overall_ipv4",
+          "stats": {
+            "flow_count": 6,
+            "median": 2.0,
+            "p95": 3.75,
+            "one_packet_rate": 0.3333333333333333
+          },
+          "counts": [
+            2,
+            2,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "audit": {
+        "flow_rows": 7,
+        "selected_native_prefix_count": 12,
+        "normalized_prefix_count": 2,
+        "normalized_membership_rows": 12
+      },
+      "candidate_weight_totals": {
+        "discounted_bytes": 711,
+        "discounted_packets": 6
+      },
+      "html": "/Users/shunta/mawi-global-analysis/examples/agurim-prime-synthetic-20261030/canonical-unit-packet-24-raw.html"
+    }
+  }
+}

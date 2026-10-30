@@ -1,8 +1,8 @@
 """Exact Raw distributions over validated normalized /24 membership.
 
-Only the agurim cohort adapter is implemented. HistogramSpec and the SQLite
-frequency summarizer do not depend on a selection method. No cache is read or
-written; canonical CSVs are streamed into temporary disk-backed working state.
+Agurim and canonical-input prime/control adapters share the same method-neutral
+frequency summarizer. Immutable selection provenance is validated; no distribution
+cache is written. Canonical CSVs stream into temporary disk-backed working state.
 """
 from __future__ import annotations
 
@@ -236,8 +236,19 @@ def analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
         raise ValueError('chunksize must be a positive integer')
     root = Path(root).expanduser().resolve()
     info = inspect_run(root,dataset_id,run_name,raw_only=True,verify_content_hashes=False)
-    lineage = _aguri_lineage(info)
     inputs = _input_hashes(info,root)
+    is_prime = ('agurim_prime' in info.manifest.get('cache',{})
+                or 'agurim_prime_candidates' in info.manifest.get('artifacts',{})
+                or info.manifest.get('schema_version') == 'agurim-prime-run-v1')
+    if is_prime:
+        from mawi_global_analysis.agurim_prime.stage import inspect_prime_lineage
+        lineage = inspect_prime_lineage(info,root,inputs)
+        method = info.manifest['selection']['method']
+    else:
+        if info.manifest.get('selection',{}).get('method','agurim') != 'agurim':
+            raise ValueError('unknown selection method without prime provenance')
+        lineage = _aguri_lineage(info)
+        method = 'agurim'
     if (_json(info.manifest_path) != info.manifest
             or _json(Path(inputs['flow_manifest']['path'])) != info.flow_manifest):
         raise ValueError('input manifests changed during inspection')
@@ -259,13 +270,15 @@ def analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
             db.close()
     if inputs != _input_hashes(info,root):
         raise ValueError('input files changed during /24 analysis')
+    if is_prime and lineage != inspect_prime_lineage(info,root,inputs):
+        raise ValueError('prime lineage changed during /24 analysis')
     provenance = {
         'inputs':inputs,'input_capture_sha256':info.manifest['input']['sha256'],
         'dataset_id':dataset_id,'run_name':run_name,'config_sha256':info.manifest['config']['hash'],
         'config':info.manifest['config']['text'],'source_git_commit':info.manifest.get('git_commit'),
-        'aguri_lineage':lineage,
+        **({'agurim_prime_lineage':lineage} if is_prime else {'aguri_lineage':lineage}),
         'source_evidence':info.manifest.get('evidence_level','saved_artifact_analysis'),
-        'selection':{'method':'agurim','native':'selected_for_analysis=True',
+        'selection':{'method':method,'native':'selected_for_analysis=True',
                      'normalization':'normalized_prefix_24; deduplicate /24', 'additional_filters':[]},
         'selected_native_prefixes':info.selected_prefixes,'normalized_prefixes':list(cohort),
         'aggregation':{'version':'normalized24-raw-v1','flow_size':'packet_count',
@@ -280,6 +293,6 @@ def analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
                                  for name in ('normalized24/analysis.py','flow_length.py','hashing.py')},
     }
     provenance['identity_sha256'] = stable_json_hash(provenance)
-    return {'schema_version':1,'method':'agurim','group':'Raw','dataset_id':dataset_id,
+    return {'schema_version':1,'method':method,'group':'Raw','dataset_id':dataset_id,
             'run_name':run_name,'histogram_spec':spec.to_dict(),'prefixes':cards,
             'references':references,'audit':audit,'provenance':provenance}

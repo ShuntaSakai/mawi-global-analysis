@@ -1,0 +1,560 @@
+--- a/src/agurim.h
++++ b/src/agurim.h
+@@ -38,7 +38,8 @@
+ enum aggr_criteria {
+ 	PACKET = 1,
+ 	BYTE,
+-	COMBINATION
++	COMBINATION,
++	FLOW /* one canonical binary record, independent of packet/byte weight */
+ };
+ 
+ enum out_format {
+@@ -73,6 +74,7 @@
+ 
+ struct odflow_hash {
+ 	struct odf_tailq *tbl;
++	uint64_t flow;
+ 	uint64_t packet;
+ 	uint64_t byte;
+ 	int nrecord;	/* number of records */
+@@ -82,6 +84,7 @@
+ struct odflow {
+ 	struct odflow_spec s;
+ 	int af;
++	uint64_t flow;
+ 	uint64_t packet;
+ 	uint64_t byte;
+ 	struct cache_list *odf_cache; /* keeps odflow indices during
+@@ -123,6 +126,7 @@
+ 	int timeslots; /* number of time slots for for plotting */
+ 	int max_interval; /* max interval captured from logs (for plotting) */
+ 	time_t current_time; /* current log time (for plotting) */
++	uint64_t total_flow, thresh_flow;
+ 	uint64_t total_byte, total_packet;
+ 	uint64_t thresh_byte, thresh_packet;
+ 	uint64_t input_odflows;  /* # of input IPv4 odflows */
+@@ -176,9 +180,9 @@
+ void odhash_resetall(struct response *resp);
+ struct odflow *
+ odflow_addcount(struct odflow_spec *odfsp, int af, uint64_t byte,
+-    uint64_t packet, struct response *resp);
++    uint64_t packet, uint64_t flow, struct response *resp);
+ void odproto_addcount(struct odflow *odfp, struct odflow_spec *odpsp, int af,
+-    uint64_t byte, uint64_t packet);
++    uint64_t byte, uint64_t packet, uint64_t flow);
+ struct odflow *
+ odflow_lookup(struct odflow_hash *odfh, struct odflow_spec *odfsp);
+ struct odflow *odflow_alloc(struct odflow_spec *odfsp);
+--- a/src/agurim.c
++++ b/src/agurim.c
+@@ -50,6 +50,7 @@
+ #include <time.h>
+ #include <unistd.h>
+ #include <limits.h>
++#include <inttypes.h>
+ 
+ #include "agurim.h"
+ #include "aguri_flow.h"
+@@ -87,6 +88,27 @@
+ 
+ static int flow_mode = 0;  /* read binary aguri_flow inputs from stdin */
+ static char *filter_str = NULL;
++static int flow_requested = 0;
++static int flow_forbidden_options = 0;
++static const char *flow_threshold_arg = NULL, *flow_n_arg = NULL;
++
++/* Flow-mode output is explicitly discounted HHH count, not exact prefix membership. */
++static void
++flow_output(struct response *resp)
++{
++	struct odflow *odfp;
++	char src[INET_ADDRSTRLEN], dst[INET_ADDRSTRLEN];
++	int id = 1;
++	fprintf(wfp, "aggregate_id,src_prefix,dst_prefix,discounted_flow_count,flow_ratio,discounted_bytes,discounted_packets\n");
++	odfq_areasort(&resp->odfq);
++	TAILQ_FOREACH(odfp, &resp->odfq.odfq_head, odf_chain) {
++		inet_ntop(AF_INET, odfp->s.src, src, sizeof(src));
++		inet_ntop(AF_INET, odfp->s.dst, dst, sizeof(dst));
++		fprintf(wfp, "%d,%s/%u,%s/%u,%" PRIu64 ",%.8f,%" PRIu64 ",%" PRIu64 "\n",
++		    id++, src, odfp->s.srclen, dst, odfp->s.dstlen, odfp->flow,
++		    resp->total_flow ? 100.0 * odfp->flow / resp->total_flow : 0.0, odfp->byte, odfp->packet);
++	}
++}
+ 
+ static void
+ usage()
+@@ -95,7 +117,7 @@
+ 	fprintf(stderr, "  agurim [-dhpFP]\n");
+ 	fprintf(stderr, "         [-f '<src> <dst>' or '<proto>:<sport>:<dport>'\n");
+ 	fprintf(stderr, "         [-i interval]\n"); 
+-	fprintf(stderr, "         [-m criteria (byte/packet)]\n"); 
++	fprintf(stderr, "         [-m criteria (byte/packet/flow)]\n"); 
+ 	fprintf(stderr, "         [-n nflows] [-s duration] \n");
+ 	fprintf(stderr, "         [-t thresh_percentage] [-w outputfile]\n");
+ 	fprintf(stderr, "         [-S start_time] [-E end_time]\n");
+@@ -109,6 +131,14 @@
+ 	char **files;
+ 
+ 	init(argc, argv);
++	if (query.criteria == FLOW) {
++		if (read_flow(stdin) < 0)
++			err(1, "canonical flow input failed");
++		(void)hhh_run(response);
++		flow_output(response);
++		finish();
++		return (0);
++	}
+ 
+ 	argc -= optind;
+ 	argv += optind;
+@@ -244,6 +274,8 @@
+ 	const char *wfile = NULL;
+ 
+ 	while ((ch = getopt(argc, argv, "df:hi:m:n:ps:t:vw:DE:FPS:")) != -1) {
++		if (strchr("dfipsvwEPSP", ch) != NULL)
++			flow_forbidden_options = 1;
+ 		switch (ch) {
+ 		case 'd':	/* Set the output format = txt */
+ 			query.outfmt = DEBUG;
+@@ -259,7 +291,10 @@
+ 			query.interval = strtol(optarg, NULL, 10);
+ 			break;
+ 		case 'm':
+-			if (!strncmp(optarg, "byte", 4))
++			if (!strcmp(optarg, "flow")) {
++				query.criteria = FLOW;
++				flow_requested = 1;
++			} else if (!strncmp(optarg, "byte", 4))
+ 				query.criteria = BYTE;
+ 			else if (!strncmp(optarg, "packet", 6))
+ 				query.criteria = PACKET;
+@@ -267,6 +302,7 @@
+ 				usage();
+ 			break;
+ 		case 'n':
++			flow_n_arg = optarg;
+ 			query.nflows = strtol(optarg, NULL, 10);
+ 			break;
+ 		case 'p':	/* Set the output format = json */
+@@ -280,6 +316,7 @@
+ 			query.duration = strtol(optarg, NULL, 10);
+ 			break;
+ 		case 't':
++			flow_threshold_arg = optarg;
+ 			query.threshold = strtod(optarg, NULL);
+ 			break;
+ 		case 'v':
+@@ -307,6 +344,14 @@
+ 			usage();
+ 			break;
+ 		}
++	}
++
++	if (flow_requested) {
++		if (!flow_mode || query.criteria != FLOW || flow_forbidden_options || optind != argc ||
++		    disable_heuristics > 2 || (flow_n_arg && strcmp(flow_n_arg, "0")) ||
++		    (flow_threshold_arg && (strspn(flow_threshold_arg, "0123456789") != strlen(flow_threshold_arg) ||
++		    !*flow_threshold_arg || query.threshold < 1 || query.threshold > 100)))
++			errx(1, "flow mode requires canonical IPv4 TCP/UDP binary stdin: -F -m flow [-t integer:1..100] [-n 0] [-D [-D]]");
+ 	}
+ 
+ 	if (wfile == NULL || !strcmp(wfile, "-"))
+@@ -442,7 +487,7 @@
+ 
+ 		/* insert a record into a hash table */
+ 		if (proto_view == 0)
+-			odfp = odflow_addcount(&odfsp, af, byte, packet, response);
++			odfp = odflow_addcount(&odfsp, af, byte, packet, 0, response);
+ 
+ 		/* add decomposition of the origin and destination flow */
+ 		if (fgets(buf, bufsz, fp) == NULL)
+@@ -461,11 +506,11 @@
+ 					continue;
+ 
+ 			if (proto_view == 0) {
+-				odproto_addcount(odfp, &odpsp, AF_LOCAL, byte2, packet2);
++				odproto_addcount(odfp, &odpsp, AF_LOCAL, byte2, packet2, 0);
+ 			} else {
+-				odfp = odflow_addcount(&odpsp, AF_LOCAL, byte2, packet2, response);
++				odfp = odflow_addcount(&odpsp, AF_LOCAL, byte2, packet2, 0, response);
+ 				if (!plot_phase)
+-					odproto_addcount(odfp, &odfsp, af, byte2, packet2);
++					odproto_addcount(odfp, &odfsp, af, byte2, packet2, 0);
+ 				byte -= byte2;
+ 				packet -= packet2;
+ 			}
+@@ -473,9 +518,9 @@
+ 		if (proto_view != 0 && query.f_af == 0
+ 			&& (byte > 0 || packet > 0)) {
+ 			/* add remaining counts to the wildcard proto */
+-			odfp = odflow_addcount(&zero, AF_LOCAL, byte, packet, response);
++			odfp = odflow_addcount(&zero, AF_LOCAL, byte, packet, 0, response);
+ 			if (!plot_phase)
+-				odproto_addcount(odfp, &odfsp, af, byte, packet);
++				odproto_addcount(odfp, &odfsp, af, byte, packet, 0);
+ 		}
+ 	}
+ 	free(buf);
+@@ -864,6 +909,11 @@
+ 	uint64_t byte, packet;
+ 	int af = AF_INET, len = 0;
+ 
++	if (query.criteria == FLOW && (agf->agflow_fs.fs_ipver != 4 ||
++	    (agf->agflow_fs.fs_prot != 6 && agf->agflow_fs.fs_prot != 17) ||
++	    ntohl(agf->agflow_packets) == 0))
++		errx(1, "flow mode accepts only canonical IPv4 TCP/UDP records with positive packets");
++
+ 	byte   = ntohl(agf->agflow_bytes);
+ 	packet = ntohl(agf->agflow_packets);
+ 
+@@ -883,7 +933,7 @@
+ 	memcpy(&odfsp.dst, agf->agflow_fs.fs_dstaddr, len / 8);
+ 	odfsp.srclen = len;
+ 	odfsp.dstlen = len;
+-	odfp = odflow_addcount(&odfsp, af, byte, packet, response);
++	odfp = odflow_addcount(&odfsp, af, byte, packet, query.criteria == FLOW ? 1 : 0, response);
+ 
+ 	odpsp.src[0] = agf->agflow_fs.fs_prot;
+ 	odpsp.dst[0] = agf->agflow_fs.fs_prot;
+@@ -891,7 +941,7 @@
+ 	memcpy(&odpsp.dst[1], &agf->agflow_fs.fs_dport, 2);
+ 	odpsp.srclen = 24;
+ 	odpsp.dstlen = 24;
+-	odproto_addcount(odfp, &odpsp, AF_LOCAL, byte, packet);
++	odproto_addcount(odfp, &odpsp, AF_LOCAL, byte, packet, query.criteria == FLOW ? 1 : 0);
+ 
+ 	return (1);
+ }
+@@ -904,7 +954,10 @@
+ 	unsigned long n = 0;
+ 
+ 	while (1) {
+-		if (fread(&agflow, sizeof(agflow), 1, fp) != 1) {
++		size_t nbytes = fread(&agflow, 1, sizeof(agflow), fp);
++		if (query.criteria == FLOW && nbytes != 0 && nbytes != sizeof(agflow))
++			errx(1, "truncated canonical flow record");
++		if (nbytes != sizeof(agflow)) {
+ 			if (feof(fp)) {
+ 				fprintf(stderr, "\n read %lu flows\n", n);
+ 				return (0);
+--- a/src/aguri3.c
++++ b/src/aguri3.c
+@@ -624,7 +624,7 @@
+ 	memcpy(&odfsp.dst, agf->agflow_fs.fs_dstaddr, len / 8);
+ 	odfsp.srclen = len;
+ 	odfsp.dstlen = len;
+-	odfp = odflow_addcount(&odfsp, af, byte, packet, cur_resp);
++	odfp = odflow_addcount(&odfsp, af, byte, packet, 0, cur_resp);
+ 
+ 	odpsp.src[0] = agf->agflow_fs.fs_prot;
+ 	odpsp.dst[0] = agf->agflow_fs.fs_prot;
+@@ -632,7 +632,7 @@
+ 	memcpy(&odpsp.dst[1], &agf->agflow_fs.fs_dport, 2);
+ 	odpsp.srclen = 24;
+ 	odpsp.dstlen = 24;
+-	odproto_addcount(odfp, &odpsp, AF_LOCAL, byte, packet);
++	odproto_addcount(odfp, &odpsp, AF_LOCAL, byte, packet, 0);
+ 
+ 	return (1);
+ }
+--- a/src/odflow.c
++++ b/src/odflow.c
+@@ -135,7 +135,7 @@
+ 	}
+ 
+ 	/* initialize counters */
+-	odfh->byte = odfh->packet = 0;
++	odfh->flow = odfh->byte = odfh->packet = 0;
+ 	odfh->nrecord = 0;
+ 	return (odfh);
+ }
+@@ -177,14 +177,14 @@
+ 		}
+ 	}
+ 	/* initialize counters */
+-	odfh->byte = odfh->packet = 0;
++	odfh->flow = odfh->byte = odfh->packet = 0;
+ 	odfh->nrecord = 0;
+ }
+ 
+ /* add counts to upper odflow */
+ struct odflow *
+ odflow_addcount(struct odflow_spec *odfsp, int af,
+-    uint64_t byte, uint64_t packet, struct response *resp)
++    uint64_t byte, uint64_t packet, uint64_t flow, struct response *resp)
+ {
+ 	struct odflow_hash *odfh = NULL;
+ 	struct odflow *odfp;
+@@ -205,10 +205,12 @@
+ 	/* update count in the hash */
+ 	odfh->byte += byte;
+ 	odfh->packet += packet;
++	odfh->flow += flow;
+ 
+ 	/* update count in this record */
+ 	odfp->byte += byte;
+ 	odfp->packet += packet;
++	odfp->flow += flow;
+ 
+ 	return (odfp);
+ }
+@@ -216,13 +218,14 @@
+ /* add counts to lower odflow (odproto) */
+ void
+ odproto_addcount(struct odflow *odfp, struct odflow_spec *odpsp, int af,
+-    uint64_t byte, uint64_t packet)
++    uint64_t byte, uint64_t packet, uint64_t flow)
+ {
+ 	struct odflow *odpp;
+ 
+ 	odpp = odproto_lookup(odfp, odpsp, af);
+ 	odpp->byte += byte;
+ 	odpp->packet += packet;
++	odpp->flow += flow;
+ }
+ 
+ struct odflow *
+@@ -375,6 +378,7 @@
+ 			if (odflowspec_is_overlapped(&wildcard[i]->s, &odpp->s)) {
+ 				wildcard[i]->byte   += odpp->byte;
+ 				wildcard[i]->packet += odpp->packet;
++				wildcard[i]->flow += odpp->flow;
+ 				candidates[i][n] = odpp;
+ 			}
+ 		n++;
+@@ -383,9 +387,11 @@
+ 	
+ 	/* select the best wildcard */
+ 	idx = 0;
+-	if (wildcard[0]->packet < wildcard[1]->packet)
++	if ((query.criteria == FLOW ? wildcard[0]->flow : wildcard[0]->packet) <
++	    (query.criteria == FLOW ? wildcard[1]->flow : wildcard[1]->packet))
+ 		idx = 1;
+-	if (wildcard[idx]->packet < wildcard[2]->packet / 2)
++	if ((query.criteria == FLOW ? wildcard[idx]->flow : wildcard[idx]->packet) <
++	    (query.criteria == FLOW ? wildcard[2]->flow : wildcard[2]->packet) / 2)
+ 		idx = 2;  /* use proto:*:* if either port is not a majority */
+ 
+ 	/* remove the merged entries */
+--- a/src/hhh.c
++++ b/src/hhh.c
+@@ -50,7 +50,7 @@
+  */
+ struct hhh_params {
+ 	struct odflow **flow_list;  /* list of original odflows to aggregate */
+-	uint64_t thresh, thresh2;	/* threshold values for aggregation */
++	uint64_t thresh, thresh2, thresh_flow;	/* threshold values for aggregation */
+ 	int	maxsize;    /* max size to detect the edge: 32 for IPv4 */
+ 	int	minsize;    /* granularity */
+ 	int	prefixlen;  /* prefix length: 32 for IPv4 addres */
+@@ -63,7 +63,7 @@
+ 
+ inline static int label_check(struct odflow_spec *odfsp, int label[]);
+ inline static int thresh_check(struct odflow *odfp, 
+-				uint64_t thresh, uint64_t thresh2);
++				uint64_t thresh, uint64_t thresh2, uint64_t thresh_flow);
+ static int odflow_aggregate(struct odflow_hash *odfh, struct odflow *parent,
+ 		int label[], struct hhh_params *params);
+ static int odflow_extract(struct odflow_hash *odfh, struct odflow *parent,
+@@ -71,7 +71,7 @@
+ static int lattice_search(struct odflow *parent, int pl0, int pl1, int size,
+ 			int pos, struct hhh_params *params);
+ static int find_hhh(struct odflow_hash *hash, int bitlen,
+-		uint64_t thresh, uint64_t thresh2,
++		uint64_t thresh, uint64_t thresh2, uint64_t thresh_flow,
+ 		struct response *resp, struct odf_tailq *odfqp);
+ 
+ static struct odflow_hash *dummy_hash;  /* used in lattice_search for
+@@ -93,9 +93,13 @@
+  * check if the odflow is above the threshold
+  */
+ inline static int
+-thresh_check(struct odflow *odfp, uint64_t thresh, uint64_t thresh2)
++thresh_check(struct odflow *odfp, uint64_t thresh, uint64_t thresh2, uint64_t thresh_flow)
+ {
+ 	switch (query.criteria) { 
++	case FLOW:
++		if (odfp->flow >= thresh_flow)
++			return (1);
++		break;
+ 	case PACKET:
+ 		if (odfp->packet >= thresh2)
+ 			return (1);
+@@ -169,6 +173,7 @@
+ 		odfp = odflow_lookup(odfh, &odfsp);
+ 		odfp->byte += _odfp->byte;
+ 		odfp->packet += _odfp->packet;
++		odfp->flow += _odfp->flow;
+ 		odfp->af = _odfp->af;
+ 
+ 		/* save this index in the cache list for sub-attr aggregation */
+@@ -195,7 +200,7 @@
+                 while ((odfp = TAILQ_FIRST(&odfh->tbl[i].odfq_head)) != NULL) {
+                         TAILQ_REMOVE(&odfh->tbl[i].odfq_head, odfp, odf_chain);
+ 			odfh->tbl[i].nrecord--;
+-			if (!thresh_check(odfp, params->thresh, params->thresh2)) {
++			if (!thresh_check(odfp, params->thresh, params->thresh2, params->thresh_flow)) {
+ 				/* under the threshold, discard this entry */
+ 				odflow_free(odfp);
+ 				continue;
+@@ -210,6 +215,7 @@
+ 
+ 			/* book keeping extracted packets/bytes */
+ 			parent->packet -= odfp->packet;
++			parent->flow -= odfp->flow;
+ 			parent->byte   -= odfp->byte;
+ 
+ 			/* add this entry to the tail of the queue */
+@@ -353,7 +359,7 @@
+ 			TAILQ_FOREACH(odfp, &(my_hash->tbl[i].odfq_head), odf_chain) {
+ 				/* recursively visit sub-areas */
+ 				int n, subpos, subpl0, subpl1;
+-				uint64_t packet, byte;
++				uint64_t packet, byte, flow;
+ 
+ 				if (!do_aggregate) /* dummy iteration */
+ 					odfp = parent; /* use parent's */
+@@ -362,7 +368,7 @@
+ 					    (subpos == POS_LEFT || subpos == POS_RIGHT))
+ 						/* if on edge, skip left/right */
+ 						continue;
+-					if (thresh_check(odfp, params->thresh, params->thresh2) == 0)
++					if (thresh_check(odfp, params->thresh, params->thresh2, params->thresh_flow) == 0)
+ 						break; /* residual < thresh */
+ 					/* adjust prefixlen pair for sub-area */
+ 					subpl0 = pl0; subpl1 = pl1;
+@@ -392,12 +398,14 @@
+ 
+ 					/* visit this sub-area */
+ 					packet = odfp->packet;
++					flow = odfp->flow;
+ 					byte   = odfp->byte;
+ 					n = lattice_search(odfp, subpl0, subpl1, subsize, subpos, params);
+ 					nflows += n;
+ 					if (n > 0 && do_aggregate) {
+ 						/* propagate extracted pkts/bytes to parent */
+ 						parent->packet -= packet - odfp->packet;
++						parent->flow -= flow - odfp->flow;
+ 						parent->byte -= byte - odfp->byte;
+ 					}
+ 				}
+@@ -412,7 +420,7 @@
+ 	 * skip if the parent becomes smaller than the threshold
+ 	 */
+ 	if (do_aggregate) {
+-		if (thresh_check(parent, params->thresh, params->thresh2))
++		if (thresh_check(parent, params->thresh, params->thresh2, params->thresh_flow))
+ 			nflows += odflow_extract(my_hash, parent, params);
+ 		odhash_free(my_hash);
+ 	}
+@@ -421,7 +429,7 @@
+ }
+ 
+ static int
+-find_hhh(struct odflow_hash *hash, int bitlen, uint64_t thresh, uint64_t thresh2,
++find_hhh(struct odflow_hash *hash, int bitlen, uint64_t thresh, uint64_t thresh2, uint64_t thresh_flow,
+ 	struct response *resp, struct odf_tailq *odfqp)
+ {
+ 	struct odflow *root, *odfp, *next;
+@@ -445,6 +453,7 @@
+ 	/* allocate flow buffer to store all the flow entries */
+ 	params.thresh  = thresh;
+ 	params.thresh2 = thresh2;
++	params.thresh_flow = thresh_flow;
+ 	params.minsize = 1;
+ 	params.maxsize = bitlen;
+ 	params.prefixlen = bitlen;
+@@ -503,6 +512,7 @@
+ 					params.flow_list[n] = odfp;
+ 					cl_append(root->odf_cache, n);
+ 					root->packet += odfp->packet;
++					root->flow += odfp->flow;
+ 					root->byte   += odfp->byte;
+ 					n++;
+ 				}
+@@ -531,6 +541,7 @@
+ 				params.flow_list[n] = odfp;
+ 				cl_append(root->odf_cache, n);
+ 				root->packet += odfp->packet;
++					root->flow += odfp->flow;
+ 				root->byte   += odfp->byte;
+ 				n++;
+ 			}
+@@ -612,8 +623,10 @@
+ 	
+ 	if (proto_view == 0) {
+ 		/* calculate total bytes/packets and thresholds */
++		resp->total_flow = resp->ip_hash->flow + resp->ip6_hash->flow;
++		resp->thresh_flow = (resp->total_flow * query.threshold + 99) / 100;
+ 		resp->total_byte = resp->ip_hash->byte + resp->ip6_hash->byte;
+-		if (resp->total_byte == 0)
++		if (query.criteria == FLOW ? resp->total_flow == 0 : resp->total_byte == 0)
+ 			return (0);  /* nothing to aggregate */
+ 		resp->thresh_byte =
+ 		    (resp->total_byte * query.threshold + 99) / 100;
+@@ -625,14 +638,14 @@
+ 		
+ 		/* for IPv4, aggregate 32 bits */
+ 		resp->nflows = find_hhh(resp->ip_hash, 32, resp->thresh_byte, 
+-					resp->thresh_packet, resp, &resp->odfq);
++					resp->thresh_packet, resp->thresh_flow, resp, &resp->odfq);
+ 		/* for IPv6, aggregate 128 bits */
+ 		resp->nflows += find_hhh(resp->ip6_hash, 128, resp->thresh_byte,
+-					resp->thresh_packet, resp, &resp->odfq);
++					resp->thresh_packet, resp->thresh_flow, resp, &resp->odfq);
+ 	} else {
+ 		/* calculate total bytes/packets and thresholds */
+ 		resp->total_byte = resp->proto_hash->byte;
+-		if (resp->total_byte == 0)
++		if (query.criteria == FLOW ? resp->total_flow == 0 : resp->total_byte == 0)
+ 			return (0);  /* nothing to aggregate */
+ 		resp->thresh_byte =
+ 		    (resp->total_byte * query.threshold + 99) / 100;
+@@ -641,7 +654,7 @@
+ 		    (resp->total_packet * query.threshold + 99) / 100;
+ 
+ 		resp->nflows = find_hhh(resp->proto_hash, 24, resp->thresh_byte,
+-				    resp->thresh_packet, resp, &resp->odfq);
++				    resp->thresh_packet, resp->thresh_flow, resp, &resp->odfq);
+ 	}
+ 
+ 	/* if # of entries is specified, further reduce the list */
+@@ -658,21 +671,23 @@
+ 	/* aggregate protocols */
+         TAILQ_FOREACH(odfp, &resp->odfq.odfq_head, odf_chain) {
+ 		/* calculate threshold */
+-		uint64_t thresh, thresh2;
++		uint64_t thresh, thresh2, thresh_flow;
++		thresh_flow = (odfp->flow * query.threshold + 99) / 100;
+ 		thresh  = (odfp->byte   * query.threshold + 99) / 100;
+ 		thresh2 = (odfp->packet * query.threshold + 99) / 100;
+ 		if (disable_heuristics < 2) {
+ 			/* increase the threshold for sub-attributes */
+ 			thresh *= 4;
+ 			thresh2 *= 4;
++			thresh_flow *= 4;
+ 		}
+ 		if (proto_view == 0) {
+-			nflows = find_hhh(NULL, 24, thresh, thresh2,
++			nflows = find_hhh(NULL, 24, thresh, thresh2, thresh_flow,
+ 						resp, &odfp->odf_odpq);
+ 		} else {
+-			nflows = find_hhh(NULL, 32, thresh, thresh2,
++			nflows = find_hhh(NULL, 32, thresh, thresh2, thresh_flow,
+ 						resp, &odfp->odf_odpq);
+-			nflows += find_hhh(NULL, 128, thresh, thresh2,
++			nflows += find_hhh(NULL, 128, thresh, thresh2, thresh_flow,
+ 						resp, &odfp->odf_odpq);
+ 		}
+ 
+--- a/src/agurim_plot.c
++++ b/src/agurim_plot.c
+@@ -279,6 +279,7 @@
+ 			/* update a parent */
+ 			par->byte += odfp->byte;
+ 			par->packet += odfp->packet;
++			par->flow += odfp->flow;
+ 
+ 			/* move protocols as well */
+ 			odfq_moveall(&odfp->odf_odpq, &par->odf_odpq);

@@ -32,6 +32,24 @@ provenance updates where applicable.
   reproduce legacy output, or alter legacy behavior merely to make it
   corrected.
 
+## Agurim prime experimental condition
+
+- Agurim prime is a separate Raw selection condition: one canonical bidirectional
+  IPv4 TCP/UDP flow contributes one independent flow count to the existing RLS/HHH
+  structure. Source/destination orientation remains first observed.
+- HHH discounted residual counts are not exact native or normalized-prefix flow
+  populations. Recompute membership and deduplicated distributions from canonical
+  observations using the same corrected rules above; use every normalized /24.
+- Compare canonical-input flow, byte and packet weights using the same CSV and
+  threshold/options. Raw-PCAP versus canonical-input comparisons also change
+  endpoint orientation, possible scope, and one/two-stage aggregation; do not
+  attribute all differences to weighting.
+- Preserve the original pinned submodule. The uncommitted local source fork is
+  parent-managed as a patch; record the upstream commit, patch/fork identity,
+  actual fork commit (null until published), executable checksum and converter
+  identity. Keep its runs/caches separate from original Agurim. Operational and
+  evidence details are in [the prime guide](../guide/agurim-prime.md).
+
 ## Scan-like classification and removal
 
 - Use cautious terms such as *scan-like*, *probe-like*, and *observed

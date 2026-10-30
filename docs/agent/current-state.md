@@ -82,6 +82,26 @@ The Phase 4 one-packet-context verification run completed on 2026-09-27 with
 `uv run pytest -q`: 307 passed. Consult current CI or rerun the relevant
 verification command before reporting test status for a later change.
 
+## Agurim prime implementation verification (2026-10-30)
+
+The canonical-input flow-count RLS condition is implemented through a separate
+parent-managed patch fork, immutable provenance-bearing caches/runs, canonical
+byte/packet control conditions and a unit-packet prototype. It reuses corrected
+both-side selection, native containment, full-/24 OR membership and the common
+normalized24 Raw statistics/HTML. The upstream submodule is unchanged. No fork
+commit or remote has been published; the build records null fork_commit and
+identifies exact source by pinned upstream plus patch checksum.
+
+Compiled upstream/fork comparisons, synthetic canonical/PCAP end-to-end tests
+and browser interaction checks cover this implementation. Generated synthetic
+examples and a comparison JSON are under examples/agurim-prime-synthetic-20261030.
+See [the prime guide](../guide/agurim-prime.md) for execution, results and constraints.
+Final verification: focused prime/C/normalized24 tests 84 passed; full suite
+686 passed and the same three pre-existing Notebook 06 failures (baseline
+637 passed with those three failures); git diff --check passed. Both independent
+review findings were fixed and closure reviewed. No real MAWI execution or
+large-data performance validation is claimed.
+
 ## Real-data validated
 
 No completed raw-PCAP end-to-end validation is recorded here. The existing

@@ -1,7 +1,8 @@
 # Experiment 1: Raw agurim normalized-/24 dashboard
 
-This command implements only the existing agurim selection method. It reads a
-successful corrected IPv4 run's canonical `flows.csv`, `prefixes.csv` and
+This command supports the existing Agurim method and canonical-input
+Agurim prime/control runs. It reads a successful corrected IPv4 run's canonical
+`flows.csv`, `prefixes.csv` and
 `flow_prefix_membership.csv` through the saved manifest. It does not parse
 PCAPs, invoke agurim, read flow labels, remove scan-like traffic, or reuse the
 native-prefix distribution cache.
@@ -85,9 +86,9 @@ To reuse exactly the same specification in a future method, save the embedded
 payload's `histogram_spec` object as JSON and pass `--histogram-spec spec.json`.
 Supplied axes that would clip data are rejected. `summarize_frequencies` consumes
 the method-independent SQLite `dist(target,packets,n)` contract; the renderer
-consumes the small summary/count payload. Future agurim-prime and Random
-selection adapters can use those interfaces. No such adapters are implemented
-by this change.
+consumes the small summary/count payload. Agurim prime and canonical
+byte/packet/probe runs use the same adapter interfaces;
+see [Agurim prime](agurim-prime.md). Random selection remains future work.
 
 Search matches /24 and contributing selected native prefixes. Sorting affects
 only card order. Selecting a card changes the detail view. Search and sorting
@@ -184,8 +185,9 @@ Rendering/export lives in `mawi_global_analysis.normalized24.dashboard`.
 Implementation hashes resolve the moved analysis source and shared parent
 modules from their actual paths. The aggregation specification and HTML
 payload format are unchanged. Future conditions can reuse the common
-analysis and presentation files within this package; new selection methods
-remain separate future work. Tests and documentation retain their standard
+analysis and presentation files within this package; Agurim prime/control
+selection remains a separate pipeline feeding this package. Tests and
+documentation retain their standard
 repository locations.
 
 Source grouping verification (2026-10-30):

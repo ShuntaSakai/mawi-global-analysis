@@ -27,6 +27,9 @@ implementation and tests. Existing documents outside `docs/agent/`, including
 historical designs and plans in `docs/archive/society-2026/superpowers/`, are
 background only unless a current task explicitly asks for historical context.
 
+For the separate flow-count RLS condition, its controls, fork management and
+shared Raw /24 dashboard, also read [the Agurim prime guide](../guide/agurim-prime.md).
+
 ## Authority and scope
 
 The research contract is the current repository-wide semantic authority.
