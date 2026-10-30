@@ -70,7 +70,7 @@ and null/NA median, p95 and one-packet rate.
 
 ## Shared comparison specification
 
-`HistogramSpec` in `normalized24.py` defines fixed integer intervals beginning
+`HistogramSpec` in `src/mawi_global_analysis/normalized24/analysis.py` defines fixed integer intervals beginning
 `[1,2), [2,3), [3,4), [4,8), [8,16), ...`, followed by `[1048576,2**63)`
 as the terminal overflow interval. Packet counts must be positive int64
 integers. Bins are drawn at equal visual widths, not as a numeric density axis.
@@ -153,12 +153,44 @@ One independent review identified missing contradictory Aguri-producer checks
 and external Aguri-cache output protection. Both were reproduced with failing
 tests and fixed; the final test counts above include those regressions.
 
-Files added: `src/mawi_global_analysis/normalized24.py`,
-`src/mawi_global_analysis/normalized24_dashboard.py`,
-`src/mawi_global_analysis/normalized24_dashboard.html`,
-`scripts/export_normalized24_dashboard.py`, `tests/test_normalized24.py`,
-this guide, and `docs/superpowers/plans/2026-10-30-normalized-24-dashboard.md`.
-Modified: `src/mawi_global_analysis/flow_length.py` (additive explicit Raw
-inspection mode; existing default preserved). Deleted: none. Existing
-dashboards, notebooks and caches were not changed. Changes remain uncommitted
-on `main`; no staging, commit, push or PR was performed.
+## Source organization
+
+All /24 dashboard implementation files are grouped in one package:
+
+```text
+src/mawi_global_analysis/normalized24/
+├── __init__.py       # Public analysis API
+├── __main__.py       # python -m entry point
+├── analysis.py       # Cohort validation, exact aggregation and shared bins/axes
+├── dashboard.py      # Standalone HTML rendering and export
+├── dashboard.html    # Offline card/search/sort/detail UI
+└── cli.py            # Command-line arguments and execution
+```
+
+The existing `scripts/export_normalized24_dashboard.py` is a thin entry-point
+wrapper, so the original command remains supported. Alternatively, use:
+
+```sh
+uv run python -m mawi_global_analysis.normalized24 \
+  --root /path/to/analysis-root \
+  --dataset 202604081400 \
+  --run baseline \
+  --output /path/to/new-exports/agurim-24-raw.html
+```
+
+The existing public analysis import remains
+`from mawi_global_analysis.normalized24 import HistogramSpec, analyze_agurim_run`.
+Rendering/export lives in `mawi_global_analysis.normalized24.dashboard`.
+Implementation hashes resolve the moved analysis source and shared parent
+modules from their actual paths. The aggregation specification and HTML
+payload format are unchanged. Future conditions can reuse the common
+analysis and presentation files within this package; new selection methods
+remain separate future work. Tests and documentation retain their standard
+repository locations.
+
+Source grouping verification (2026-10-30):
+
+- `.venv/bin/python -m pytest -q -p no:cacheprovider tests/test_normalized24.py`: 35 passed, including both the original script and package entry points.
+- `.venv/bin/python -m pytest -q -p no:cacheprovider`: 637 passed, the same three pre-existing Notebook failures listed above.
+- Compared the previous synthetic export with the reorganized implementation: distributions, audit, shared bins/axes, selection and input provenance match. The moved HTML template is byte-identical; implementation hashes resolve the new paths correctly.
+- `git diff --check`: passed. No existing generated HTML, Notebook or cache was changed. No staging, commit, push or PR was performed.

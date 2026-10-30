@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 
 from mawi_global_analysis.hashing import sha256_file
-from mawi_global_analysis.normalized24 import HistogramSpec, analyze_agurim_run
+from .analysis import HistogramSpec, analyze_agurim_run
 from mawi_global_analysis.prefix_dashboard import _write_new_dashboard
 
 

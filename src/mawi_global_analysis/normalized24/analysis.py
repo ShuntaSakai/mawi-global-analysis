@@ -276,8 +276,8 @@ def analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
         'histogram_spec_sha256':stable_json_hash(spec.to_dict()),
         'validation':'canonical IDs unique; normalized edges unique, endpoint-correct and complete',
         'evidence':'saved_artifact_analysis; no real-data validation asserted',
-        'implementation_sha256':{name:sha256_file(Path(__file__).with_name(name))
-                                 for name in ('normalized24.py','flow_length.py','hashing.py')},
+        'implementation_sha256':{name:sha256_file(Path(__file__).resolve().parents[1]/name)
+                                 for name in ('normalized24/analysis.py','flow_length.py','hashing.py')},
     }
     provenance['identity_sha256'] = stable_json_hash(provenance)
     return {'schema_version':1,'method':'agurim','group':'Raw','dataset_id':dataset_id,

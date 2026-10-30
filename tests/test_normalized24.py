@@ -32,7 +32,7 @@ def analysis():
 
 def dashboard():
     try:
-        return importlib.import_module('mawi_global_analysis.normalized24_dashboard')
+        return importlib.import_module('mawi_global_analysis.normalized24.dashboard')
     except ModuleNotFoundError:
         pytest.fail('normalized /24 offline dashboard is not implemented')
 
@@ -213,12 +213,15 @@ def test_export_failure_does_not_publish_html(saved,tmp_path):
     assert not out.exists()
 
 
-def test_cli_exports_or_reports_failure(saved,tmp_path):
+@pytest.mark.parametrize('entrypoint',['script','module'])
+def test_cli_exports_or_reports_failure(saved,tmp_path,entrypoint):
     script = ROOT/'scripts/export_normalized24_dashboard.py'
-    args = [sys.executable,str(script),'--root',str(saved[0]),'--dataset','fixture',
+    command = [sys.executable,str(script)] if entrypoint=='script' else [sys.executable,'-m','mawi_global_analysis.normalized24']
+    args = [*command,'--root',str(saved[0]),'--dataset','fixture',
             '--run','baseline','--output',str(tmp_path/'cli.html'),'--chunksize','1']
     result = subprocess.run(args,capture_output=True,text=True)
     assert result.returncode == 0, result.stderr
+    assert (tmp_path/'cli.html').is_file()
     result = subprocess.run(args,capture_output=True,text=True)
     assert result.returncode != 0 and '上書き' in result.stderr
 

@@ -2,7 +2,7 @@
 
 **Goal:** Experiment 1's agurim selected-/24 dashboard, using canonical flows and validated normalized membership.
 
-**Architecture:** Reuse saved-run identity checks and bounded CSV readers from `flow_length.py`, adding an explicit Raw inspection mode while preserving its default scan-analysis contract. A separate `normalized24.py` aggregates exact packet-count frequencies on temporary SQLite storage. A method-independent histogram specification and renderer consume the resulting small payload. Only the agurim adapter is implemented.
+**Architecture:** Reuse saved-run identity checks and bounded CSV readers from `flow_length.py`, adding an explicit Raw inspection mode while preserving its default scan-analysis contract. The `normalized24/analysis.py` module aggregates exact packet-count frequencies on temporary SQLite storage. A method-independent histogram specification and renderer consume the resulting small payload. Only the agurim adapter is implemented.
 
 **Constraints:** Work on existing main; no branches, worktrees, staging, commits, push or PR. Preserve existing dashboard, notebooks, caches and results. No PCAP processing or scan removal. Synthetic verification is not real-data validation.
 
@@ -18,8 +18,8 @@
 ## Tasks
 
 1. Add `tests/test_normalized24.py`: synthetic baseline saved run, duplicate normalized siblings, outside-native/full-/24 traffic, cross-/24 flow, zero-flow prefix, unselected and IPv6 traffic, independent statistics, chunk invariance, corrupt membership and identities, no overwrite, offline export and CLI. Observe missing-feature failures.
-2. Extend `inspect_run(..., raw_only=False)` and implement `analyze_agurim_run` plus `HistogramSpec` in `src/mawi_global_analysis/normalized24.py`; run focused tests.
-3. Add `normalized24_dashboard.py`, `.html`, `scripts/export_normalized24_dashboard.py` and guide. Test real HTML browser interactions offline and run complete suite.
+2. Extend `inspect_run(..., raw_only=False)` and implement `analyze_agurim_run` plus `HistogramSpec` in `src/mawi_global_analysis/normalized24/analysis.py`; run focused tests.
+3. Add `normalized24/dashboard.py`, `normalized24/dashboard.html`, `scripts/export_normalized24_dashboard.py` and guide. Test real HTML browser interactions offline and run complete suite.
 4. Review research semantics, provenance, bounded memory and regressions with a fresh reviewer; fix material findings and record final verification.
 
 ## Review focus
@@ -41,3 +41,12 @@
 - Final focused verification: `.venv/bin/python -m pytest -q -p no:cacheprovider tests/test_normalized24.py` → 34 passed.
 - Final full suite: `.venv/bin/python -m pytest -q -p no:cacheprovider` → 636 passed, 3 pre-existing Notebook failures (same as the 602-pass baseline); names and evidence limits are in the guide.
 - `git diff --check` passed; work remains uncommitted on existing `main`. Existing dashboards, notebooks and caches unchanged. No real-data verification or large-scale benchmark claimed.
+
+## Follow-up: source grouping
+
+The dashboard implementation, HTML and CLI were grouped under
+`src/mawi_global_analysis/normalized24/`. The scripts directory keeps only
+a compatibility entry point. Analysis semantics and payload schema remain
+unchanged; provenance source paths follow the moved implementation.
+
+Follow-up verification: 35 focused tests passed; full suite 637 passed with the same three pre-existing Notebook failures. Previous synthetic payload semantics and template bytes were preserved. Changes remain uncommitted.
