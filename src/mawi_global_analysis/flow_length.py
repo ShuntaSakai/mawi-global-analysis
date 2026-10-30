@@ -125,12 +125,16 @@ def _chunks(info: Inspection, name: str, columns: tuple[str, ...], size: int,
 
 
 def inspect_run(root: Path, dataset_id: str, run_name: str, *,
-                verify_content_hashes: bool = True) -> Inspection:
+                verify_content_hashes: bool = True, raw_only: bool = False) -> Inspection:
     """Resolve only manifest-recorded files; check identities and small metadata.
 
     Absolute paths are never rewritten. CSV contents have no pipeline-recorded
     checksum in older runs: header, row count and relational checks are necessary
     but cannot certify byte-for-byte identity with the historical run.
+
+    ``raw_only`` validates corrected IPv4 prefix settings without requiring scan
+    labels/settings. It permits an empty selected cohort. Default behavior keeps
+    the existing scan-source-driven native analysis contract unchanged.
     """
     root = Path(root).expanduser().resolve()
     for value in (dataset_id, run_name):
@@ -150,18 +154,26 @@ def inspect_run(root: Path, dataset_id: str, run_name: str, *,
         raise ValueError('saved config hash mismatch')
     cfg = ExperimentConfig.model_validate(yaml.safe_load(text))
     expected = load_config(CONFIG_PATH)
-    if cfg.experiment.name != 'scan_source_driven_removal':
-        raise ValueError('scan_source_driven_removal実験の保存設定が必要です')
-    for section in ('flow', 'prefix', 'scan', 'analysis'):
-        if getattr(cfg, section) != getattr(expected, section):
-            raise ValueError(f'{section} settings differ from configs/scan_source_driven_removal.yaml')
-    if cfg.aguri.options != expected.aguri.options:
-        raise ValueError('aguri options differ from scan_source_driven_removal')
+    if raw_only:
+        baseline = load_config(CONFIG_PATH.with_name('baseline.yaml'))
+        if (cfg.experiment.name == 'paper_legacy' or cfg.prefix != baseline.prefix
+                or cfg.analysis != baseline.analysis):
+            raise ValueError('Raw /24 analysis requires corrected IPv4 src_or_dst prefix settings')
+    else:
+        if cfg.experiment.name != 'scan_source_driven_removal':
+            raise ValueError('scan_source_driven_removal実験の保存設定が必要です')
+        for section in ('flow', 'prefix', 'scan', 'analysis'):
+            if getattr(cfg, section) != getattr(expected, section):
+                raise ValueError(f'{section} settings differ from configs/scan_source_driven_removal.yaml')
+        if cfg.aguri.options != expected.aguri.options:
+            raise ValueError('aguri options differ from scan_source_driven_removal')
     artifacts = manifest.get('artifacts')
     if not isinstance(artifacts, dict):
         raise ValueError('manifest.artifacts objectがありません')
     entries, paths = {}, {}
     for name, schema in SCHEMAS.items():
+        if raw_only and name == 'flow_labels':
+            continue
         aliases = (name, 'flows_csv') if name == 'flows' else (name,)
         present = [key for key in aliases if key in artifacts]
         if len(present) > 1:
@@ -229,7 +241,7 @@ def inspect_run(root: Path, dataset_id: str, run_name: str, *,
                     raise ValueError(f'invalid selected native prefix: {prefix}')
                 info.selected_prefixes.append(prefix)
     info.selected_prefixes.sort()
-    if not info.selected_prefixes:
+    if not info.selected_prefixes and not raw_only:
         raise ValueError('selected native prefixが0件です。別runや空台帳を確認してください')
     networks = [ipaddress.ip_network(p) for p in info.selected_prefixes]
     if any(a.overlaps(b) for i, a in enumerate(networks) for b in networks[i+1:]):
