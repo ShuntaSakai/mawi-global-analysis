@@ -1,8 +1,10 @@
-# RLS重み比較：段階1の読み取り専用検証
+# RLS重み比較：条件検証とオフラインダッシュボード
 
 同じcanonical IPv4 TCP/UDPを使ったpacket / byte / flowの成功済み3 runについて、
-主実験の条件と保存ファイルの整合性を検証します。RLS再実行、run作成、cache作成、
-ECDF・coverage・フローサイズ統計の集計は行いません。
+主実験の条件と保存ファイルの整合性を検証します。`--validate-only`は従来どおり
+検証だけを行います。`--output-dir`による比較・HTML生成は
+[ダッシュボードガイド](rls-weight-comparison-dashboard.md)を参照してください。
+どちらのモードもPCAP処理やRLSを自動再実行しません。
 
 ## 実行
 
@@ -21,8 +23,9 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m mawi_global_analysis.rls_weight_co
 ```
 
 run名は例です。既存の実run名へ置き換えてください。`--json`は検証metadataを標準出力に
-表示します。ファイル保存用オプションはありません。`--chunksize`は正整数で既定100000。
-`--validate-only`を省略すると引数エラーになります。
+表示します。`--chunksize`は正整数で既定100000。
+`--validate-only`と`--output-dir`のどちらかが必須で、両者の併用はできません。
+検証専用モードの入力不変・保存なしという契約は維持しています。
 
 終了コードは成功0、不一致・破損・不足・引数エラー2です。不一致は最初に検出した
 mode/runと項目を表示します。例：

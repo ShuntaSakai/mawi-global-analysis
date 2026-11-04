@@ -61,6 +61,13 @@ provenance updates where applicable.
   are verified within each run, not required to match across modes. Validation
   is read-only; it does not reconstruct all membership edges or compute
   distributions/coverage. Details: [comparison guide](../guide/rls-weight-comparison.md).
+- Phase-3 generation starts only after that validation, reuses shared exact
+  statistics, and compares disk-backed deduplicated flow-ID sets. Coverage uses
+  the common canonical Overall denominator; KS is descriptive with exact integer
+  frequency arithmetic, not a p-value. Exact CSVs are independent of bounded
+  browser display samples. Simplified ECDF intervals are shown as bounds, not
+  invented exact shape. A separate comparison manifest binds all generated
+  artifacts and is published last. See [dashboard guide](../guide/rls-weight-comparison-dashboard.md).
 
 ## Scan-like classification and removal
 

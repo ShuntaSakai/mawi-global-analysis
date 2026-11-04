@@ -36,6 +36,9 @@ disable-heuristics 2, read [the RLS weight comparison guide](../guide/rls-weight
 For shared /24 totals and streamed single-run exact-frequency exports, read
 [the normalized24 statistics guide](../guide/normalized24-statistics.md).
 
+For validated three-mode comparison exports and the standalone interactive HTML,
+read [the comparison dashboard guide](../guide/rls-weight-comparison-dashboard.md).
+
 ## Authority and scope
 
 The research contract is the current repository-wide semantic authority.

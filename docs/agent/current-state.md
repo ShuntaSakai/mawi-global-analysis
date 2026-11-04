@@ -138,6 +138,25 @@ with the same three pre-existing failures. Independent review found no
 actionable issues and independently reran all 51 normalized24 tests.
 `git diff --check` passed. Real MAWI execution/performance is not asserted.
 
+## RLS comparison dashboard phase 3 (2026-11-04)
+
+The comparison generator validates the three existing runs, reuses phase-2
+exports, compares disk-backed flow-ID masks and exact frequency tables, and
+saves coverage, prefix/flow Jaccard, exact ECDF counts and descriptive KS with
+integer numerator/denominator. It publishes independent CSV/JSON artifacts,
+an offline four-tab interactive HTML, and a hash-bound comparison manifest last.
+Validation-only CLI behavior remains available. Input extraction/RLS and
+existing data/run/cache files are not modified.
+
+Verification: focused phase-1/2/3 tests 138 passed; final full suite 789 passed
+with the same three pre-existing Notebook06 failures (baseline 765/3). A final
+UI-specific run passed 24 tests. Independent review verified 500 randomized
+exact-KS/bound cases; its schema-display gap was reproduced and fixed. Actual
+generated populated and empty synthetic HTMLs passed offline browser controls
+with zero console/page errors. A separate render-only stress fixture with 20000
+/24s and 4x2000 displayed ECDF points remained responsive; this is not a MAWI
+runtime/performance claim. See [dashboard guide](../guide/rls-weight-comparison-dashboard.md).
+
 ## Real-data validated
 
 No completed raw-PCAP end-to-end validation is recorded here. The existing
