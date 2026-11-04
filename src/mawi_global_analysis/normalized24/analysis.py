@@ -75,19 +75,20 @@ def _cohort(info: Inspection, size: int) -> dict[str, list[str]]:
 def _ingest(db: sqlite3.Connection, info: Inspection, cohort: dict,
             size: int, progress) -> dict:
     db.executescript('''
-        CREATE TABLE facts (id TEXT PRIMARY KEY, ipv INTEGER, packets INTEGER,
+        CREATE TABLE facts (id TEXT PRIMARY KEY, ipv INTEGER, packets INTEGER, bytes INTEGER,
                             src24 TEXT, dst24 TEXT) WITHOUT ROWID;
         CREATE TABLE membership (prefix TEXT, id TEXT, sm INTEGER, dm INTEGER,
                                  PRIMARY KEY(prefix,id)) WITHOUT ROWID;
         CREATE INDEX membership_id ON membership(id);
     ''')
     expected = Counter(dict.fromkeys(cohort, 0))
-    columns = ('flow_id','ip_version','packet_count','src_ip','dst_ip')
+    columns = ('flow_id','ip_version','packet_count','src_ip','dst_ip','byte_count')
     for chunk in _chunks(info, 'flows', columns, size, progress):
         packets = _integers(chunk.packet_count, 'flows.packet_count', 1)
         versions = _integers(chunk.ip_version, 'flows.ip_version')
+        byte_counts = _integers(chunk.byte_count, 'flows.byte_count', 0)
         rows = []
-        for row, n, version in zip(chunk.itertuples(index=False), packets, versions):
+        for row, n, version, byte_count in zip(chunk.itertuples(index=False), packets, versions, byte_counts):
             if not row.flow_id:
                 raise ValueError('flows: empty flow_id')
             src, dst = ipaddress.ip_address(row.src_ip), ipaddress.ip_address(row.dst_ip)
@@ -98,8 +99,8 @@ def _ingest(db: sqlite3.Connection, info: Inspection, cohort: dict,
             for prefix in {src24,dst24}:
                 if prefix in cohort:
                     expected[prefix] += 1
-            rows.append((row.flow_id,int(version),int(n),src24,dst24))
-        _insert(db, 'INSERT INTO facts VALUES (?,?,?,?,?)', rows, 'flows')
+            rows.append((row.flow_id,int(version),int(n),int(byte_count),src24,dst24))
+        _insert(db, 'INSERT INTO facts VALUES (?,?,?,?,?,?)', rows, 'flows')
     for chunk in _chunks(info, 'flow_prefix_membership', MEMBERSHIP_COLUMNS, size, progress):
         if not chunk.analysis_scope.isin(['native','normalized_24']).all():
             raise ValueError('membership: unknown analysis_scope')
@@ -127,11 +128,14 @@ def _ingest(db: sqlite3.Connection, info: Inspection, cohort: dict,
             'normalized_membership_rows': sum(actual.values())}
 
 
-def summarize_frequencies(db: sqlite3.Connection, target: str, spec: HistogramSpec) -> dict:
+def summarize_frequencies(db: sqlite3.Connection, target: str, spec: HistogramSpec, *,
+                          byte_total: int | None = None) -> dict:
     """Summarize a disk frequency table exactly, retaining only quantile ranks.
 
     Contract for future adapters: dist(target TEXT, packets INTEGER, n INTEGER),
-    positive integer packets/frequencies, unique (target,packets).
+    positive integer packets/frequencies, unique (target,packets). Optional exact
+    byte_total comes from canonical facts; absent bytes are unknown for an
+    external adapter's nonempty distribution, not implicitly zero.
     """
     n = db.execute('SELECT COALESCE(SUM(n),0) FROM dist WHERE target=?', (target,)).fetchone()[0]
     if n > 2**53-1:
@@ -139,7 +143,9 @@ def summarize_frequencies(db: sqlite3.Connection, target: str, spec: HistogramSp
     positions = [(n-1)*q for q in (.5,.95)] if n else []
     ranks = {r for p in positions for r in (math.floor(p),math.ceil(p))}
     values, counts, offset, one = {}, [0]*(len(spec.bin_edges)-1), 0, 0
+    packet_total = 0
     for packets,count in db.execute('SELECT packets,n FROM dist WHERE target=? ORDER BY packets', (target,)):
+        packet_total += packets*count  # Python integers, not an overflowing SQLite SUM(product).
         counts[bisect_right(spec.bin_edges, packets)-1] += count
         if packets == 1:
             one += count
@@ -151,8 +157,28 @@ def summarize_frequencies(db: sqlite3.Connection, target: str, spec: HistogramSp
         raise ValueError('shared histogram count axis would clip data')
     quantiles = [values[math.floor(p)] + (values[math.ceil(p)]-values[math.floor(p)])*(p-math.floor(p))
                  for p in positions] if n else [None,None]
-    return {'prefix':target, 'stats':{'flow_count':n,'median':quantiles[0], 'p95':quantiles[1],
+    if byte_total is not None and (type(byte_total) is not int or byte_total < 0):
+        raise ValueError('byte_total must be a nonnegative integer or null')
+    if not n and byte_total not in (None,0):
+        raise ValueError('empty distribution cannot have a nonzero byte_total')
+    return {'prefix':target, 'stats':{'flow_count':n,'packet_total':packet_total,
+                                     'byte_total':byte_total if n else 0,
+                                     'mean_packet_count':packet_total/n if n else None,
+                                     'median':quantiles[0], 'p95':quantiles[1],
                                      'one_packet_rate':one/n if n else None}, 'counts':counts}
+
+
+class _ExactIntegerSum:
+    """SQLite aggregate returning decimal text to preserve arbitrarily large totals."""
+
+    def __init__(self):
+        self.total = 0
+
+    def step(self, value):
+        self.total += value
+
+    def finalize(self):
+        return str(self.total)
 
 
 def _summarize(db: sqlite3.Connection, cohort: dict, spec: HistogramSpec | None) -> tuple[list, list, HistogramSpec]:
@@ -161,6 +187,7 @@ def _summarize(db: sqlite3.Connection, cohort: dict, spec: HistogramSpec | None)
         # Derivation uses the common overall IPv4 population, never the method's cohort.
         upper = 10**len(str(overall)) if overall else 1
         spec = HistogramSpec(count_axis_upper=upper)
+    db.create_aggregate('exact_integer_sum', 1, _ExactIntegerSum)
     db.executescript('''
         CREATE TABLE dist (target TEXT, packets INTEGER, n INTEGER,
                            PRIMARY KEY(target,packets)) WITHOUT ROWID;
@@ -170,13 +197,23 @@ def _summarize(db: sqlite3.Connection, cohort: dict, spec: HistogramSpec | None)
             WHERE EXISTS(SELECT 1 FROM membership m WHERE m.id=f.id) GROUP BY f.packets;
         INSERT INTO dist SELECT 'overall_ipv4',packets,COUNT(*) FROM facts
             WHERE ipv=4 GROUP BY packets;
+        CREATE TABLE totals (target TEXT PRIMARY KEY, byte_total TEXT) WITHOUT ROWID;
+        INSERT INTO totals SELECT m.prefix,exact_integer_sum(f.bytes) FROM membership m
+            JOIN facts f ON m.id=f.id GROUP BY m.prefix;
+        INSERT INTO totals SELECT 'selected_union',COALESCE(exact_integer_sum(f.bytes),'0') FROM facts f
+            WHERE EXISTS(SELECT 1 FROM membership m WHERE m.id=f.id);
+        INSERT INTO totals SELECT 'overall_ipv4',COALESCE(exact_integer_sum(bytes),'0') FROM facts
+            WHERE ipv=4;
     ''')
+    def summary(target):
+        row = db.execute('SELECT byte_total FROM totals WHERE target=?', (target,)).fetchone()
+        return summarize_frequencies(db,target,spec,byte_total=int(row[0]) if row else 0)
     cards = []
     for prefix,natives in cohort.items():
-        card = summarize_frequencies(db,prefix,spec)
+        card = summary(prefix)
         card['native_prefixes'] = natives
         cards.append(card)
-    references = [summarize_frequencies(db,p,spec) for p in ('selected_union','overall_ipv4')]
+    references = [summary(p) for p in ('selected_union','overall_ipv4')]
     return cards, references, spec
 
 
@@ -222,9 +259,9 @@ def _aguri_lineage(info: Inspection) -> dict:
     return result
 
 
-def analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
+def _analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
                        chunksize: int = 100_000, scratch_dir: Path | None = None,
-                       spec: HistogramSpec | None = None, progress=None) -> dict:
+                       spec: HistogramSpec | None = None, progress=None, frequency_sink=None) -> dict:
     """Read an existing successful corrected run; fail closed on incomplete /24s.
 
     RAM: O(chunksize + number of prefixes + histogram output); SQLite page cache
@@ -266,6 +303,8 @@ def analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
             db.execute('PRAGMA temp_store=FILE')
             audit = _ingest(db,info,cohort,chunksize,progress)
             cards,references,spec = _summarize(db,cohort,spec)
+            if frequency_sink is not None:
+                frequency_sink(db)
         finally:
             db.close()
     if inputs != _input_hashes(info,root):
@@ -281,10 +320,14 @@ def analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
         'selection':{'method':method,'native':'selected_for_analysis=True',
                      'normalization':'normalized_prefix_24; deduplicate /24', 'additional_filters':[]},
         'selected_native_prefixes':info.selected_prefixes,'normalized_prefixes':list(cohort),
-        'aggregation':{'version':'normalized24-raw-v1','flow_size':'packet_count',
+        'aggregation':{'version':'normalized24-raw-v2','flow_size':'packet_count',
                        'membership_scope':'normalized_24','endpoint_rule':'src_ip OR dst_ip',
                        'union_deduplication':'flow_id','quantile':'linear: (n-1)*q',
                        'one_packet_denominator':'all Raw flows in the distribution',
+                       'packet_total':'sum(packet_count) over unique flow_id in each distribution',
+                       'byte_total':'sum(canonical byte_count) over unique flow_id in each distribution',
+                       'mean_packet_count':'packet_total / flow_count; null when empty',
+                       'total_arithmetic':'arbitrary-precision integers; per-flow inputs are int64',
                        'undefined_statistics':None,'groups':['Raw'], 'histogram_spec':spec.to_dict()},
         'histogram_spec_sha256':stable_json_hash(spec.to_dict()),
         'validation':'canonical IDs unique; normalized edges unique, endpoint-correct and complete',
@@ -293,6 +336,19 @@ def analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
                                  for name in ('normalized24/analysis.py','flow_length.py','hashing.py')},
     }
     provenance['identity_sha256'] = stable_json_hash(provenance)
-    return {'schema_version':1,'method':method,'group':'Raw','dataset_id':dataset_id,
+    return {'schema_version':2,'method':method,'group':'Raw','dataset_id':dataset_id,
             'run_name':run_name,'histogram_spec':spec.to_dict(),'prefixes':cards,
             'references':references,'audit':audit,'provenance':provenance}
+
+
+def analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
+                       chunksize: int = 100_000, scratch_dir: Path | None = None,
+                       spec: HistogramSpec | None = None, progress=None) -> dict:
+    """Validate a saved Raw run and summarize exact /24 totals and existing histograms.
+
+    No exact-frequency array or persistent cache is created. RAM remains bounded
+    by chunksize, selected prefixes and histogram output; SQLite uses temporary
+    disk state. Use export_raw_statistics for a streamed frequency artifact.
+    """
+    return _analyze_agurim_run(root,dataset_id,run_name,chunksize=chunksize,
+                               scratch_dir=scratch_dir,spec=spec,progress=progress)

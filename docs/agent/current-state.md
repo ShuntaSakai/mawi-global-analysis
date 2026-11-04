@@ -120,6 +120,24 @@ audit consistency/type handling and mandatory build provenance were reproduced
 with 12 failing regression cases and fixed. Synthetic verification of this new
 phase is separate from real MAWI validation; no scientific result is asserted.
 
+## Normalized24 statistics phase 2 (2026-11-04)
+
+Shared Raw /24 analysis adds exact packet/byte totals and mean packet count in
+schema 2, preserving quantile/rate/histogram semantics and flow_id-deduplicated
+union membership. An optional single-run export streams exact integer
+frequencies to CSV and records their hash/schema with the existing provenance
+in summary.json; no frequency array is embedded in the default payload/HTML.
+Jaccard, coverage, ECDF figures and comparison manifests remain phase-3 work.
+See [the statistics guide](../guide/normalized24-statistics.md).
+
+The pre-change baseline was 749 passed and the same three pre-existing
+Notebook 06 failures. All ten stage-1 files matched their recorded verification
+hashes before this phase. Verification: normalized24 51 passed (16 new cases),
+combined normalized24/prime/C/phase-1 tests 163 passed; full suite 765 passed
+with the same three pre-existing failures. Independent review found no
+actionable issues and independently reran all 51 normalized24 tests.
+`git diff --check` passed. Real MAWI execution/performance is not asserted.
+
 ## Real-data validated
 
 No completed raw-PCAP end-to-end validation is recorded here. The existing

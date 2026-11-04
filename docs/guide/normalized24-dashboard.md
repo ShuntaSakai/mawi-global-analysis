@@ -184,7 +184,9 @@ The existing public analysis import remains
 Rendering/export lives in `mawi_global_analysis.normalized24.dashboard`.
 Implementation hashes resolve the moved analysis source and shared parent
 modules from their actual paths. The aggregation specification and HTML
-payload format are unchanged. Future conditions can reuse the common
+payload format were unchanged by that source reorganization. Phase 2 now adds
+schema-2 totals and optional streamed exact-frequency exports; see
+[the statistics guide](normalized24-statistics.md). Future conditions can reuse the common
 analysis and presentation files within this package; Agurim prime/control
 selection remains a separate pipeline feeding this package. Tests and
 documentation retain their standard

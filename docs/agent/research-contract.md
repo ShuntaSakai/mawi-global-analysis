@@ -27,6 +27,12 @@ provenance updates where applicable.
 - Native selected-prefix analysis and normalized `/24` analysis are distinct.
   A normalized `/24` recomputes membership over the full containing `/24`; it
   is not a relabelled narrower subnet.
+- Shared Raw /24 statistics use canonical packet_count and byte_count. Each
+  /24 and the flow_id-deduplicated selected union have exact integer totals;
+  empty distributions have zero totals and null means. Schema 2 adds these
+  fields without changing quantiles/rates/histograms. Exact frequency CSVs
+  stream from SQLite with a provenance-bearing single-run summary; see
+  [the statistics guide](../guide/normalized24-statistics.md).
 - `paper_legacy` is a separate reproduction mode with its own configured
   candidate and membership behavior. Do not alter corrected behavior merely to
   reproduce legacy output, or alter legacy behavior merely to make it

@@ -33,6 +33,9 @@ shared Raw /24 dashboard, also read [the Agurim prime guide](../guide/agurim-pri
 For read-only validation of saved packet/byte/flow runs at threshold 1% and
 disable-heuristics 2, read [the RLS weight comparison guide](../guide/rls-weight-comparison.md).
 
+For shared /24 totals and streamed single-run exact-frequency exports, read
+[the normalized24 statistics guide](../guide/normalized24-statistics.md).
+
 ## Authority and scope
 
 The research contract is the current repository-wide semantic authority.

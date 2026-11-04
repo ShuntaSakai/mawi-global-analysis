@@ -17,7 +17,14 @@ def render_dashboard(data: dict) -> str:
     template_path = Path(__file__).with_suffix('.html')
     template = template_path.read_text(encoding='utf-8')
     data = {**data, 'presentation':{'template_sha256':sha256_file(template_path),
-                                  'renderer_sha256':sha256_file(Path(__file__))}}
+                                  'renderer_sha256':sha256_file(Path(__file__)),
+                                  'large_total_encoding':'packet_total/byte_total above 2**53-1 are decimal strings'}}
+    # The template's existing metrics are unchanged. Preserve new large totals
+    # exactly when JSON.parse would otherwise round them; never mutate input.
+    for group in ('prefixes','references'):
+        data[group] = [{**target,'stats':{key:str(value) if key in ('packet_total','byte_total')
+            and type(value) is int and value > 2**53-1 else value
+            for key,value in target['stats'].items()}} for target in data[group]]
     encoded = json.dumps(data,ensure_ascii=False,allow_nan=False,separators=(',',':'))
     for char in ('&','<','>','\u2028','\u2029'):
         encoded = encoded.replace(char, f'\\u{ord(char):04x}')

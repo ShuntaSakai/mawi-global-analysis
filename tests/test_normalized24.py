@@ -312,3 +312,224 @@ def test_external_caches_are_protected(saved,tmp_path,sentinel):
     out=cache/'nested/report.html'
     with pytest.raises(ValueError,match='cache'): dashboard().export_dashboard(saved[0],'fixture','baseline',out)
     assert not out.exists()
+
+
+@pytest.fixture
+def byte_saved(saved):
+    flows = saved[2]['flows'][1].copy()
+    flows['byte_count'] = [60,120,700,230,1000,9999]
+    flows['frame_byte_count'] = flows['byte_count']
+    rewrite(saved,'flows',flows)
+    return saved
+
+
+def test_exact_packet_byte_totals_and_mean_keep_existing_statistics(byte_saved):
+    data = analyze(byte_saved)
+    targets = {t['prefix']:t for t in data['prefixes']+data['references']}
+    expected = {A:(3,13,880), B:(2,14,930), EMPTY:(0,0,0),
+                'selected_union':(4,17,1110), 'overall_ipv4':(5,117,2110)}
+    assert data['schema_version'] == 2
+    assert data['provenance']['aggregation']['version'] == 'normalized24-raw-v2'
+    for target,(n,packets,byte_count) in expected.items():
+        stats = targets[target]['stats']
+        assert stats['flow_count'] == n
+        assert stats['packet_total'] == packets
+        assert stats['byte_total'] == byte_count
+        assert stats['mean_packet_count'] == (packets/n if n else None)
+    assert targets['selected_union']['stats']['median'] == 3
+    assert targets['selected_union']['stats']['p95'] == pytest.approx(9.1)
+    assert targets['selected_union']['stats']['one_packet_rate'] == .25
+    assert targets[EMPTY]['stats']['median'] is None
+    assert targets[EMPTY]['stats']['mean_packet_count'] is None
+    assert sum(t['stats']['byte_total'] for t in data['prefixes']) == 1810
+    assert targets['selected_union']['stats']['byte_total'] == 1110
+
+
+def export_stats(saved, output, **kwargs):
+    return analysis().export_raw_statistics(saved[0],'fixture','baseline',output,**kwargs)
+
+
+def test_export_streams_exact_frequencies_and_binds_provenance(byte_saved,tmp_path):
+    import csv
+    output = tmp_path/'statistics'
+    before = {p:sha256_file(p) for p in byte_saved[0].rglob('*') if p.is_file()}
+    summary_path = export_stats(byte_saved,output,chunksize=1)
+    assert summary_path == output/'summary.json'
+    data = json.loads(summary_path.read_text())
+    assert data['status'] == 'success'
+    assert data['export_schema_version'] == 'normalized24-statistics-v1'
+    descriptor = data['artifacts']['frequencies']
+    assert descriptor['path'] == 'frequencies.csv'
+    assert descriptor['schema_version'] == 'normalized24-exact-frequencies-v1'
+    assert descriptor['sha256'] == sha256_file(output/'frequencies.csv')
+    with (output/'frequencies.csv').open(newline='') as stream:
+        rows = list(csv.DictReader(stream))
+    assert descriptor['row_count'] == len(rows)
+    assert [(r['distribution'],int(r['packet_count'])) for r in rows] == sorted(
+        (r['distribution'],int(r['packet_count'])) for r in rows)
+    targets = {t['prefix']:t for t in data['prefixes']+data['references']}
+    for target,record in targets.items():
+        values = [r for r in rows if r['distribution']==target]
+        assert sum(int(r['frequency']) for r in values) == record['stats']['flow_count']
+        assert sum(int(r['packet_count'])*int(r['frequency']) for r in values) == record['stats']['packet_total']
+    assert not [r for r in rows if r['distribution']==EMPTY]
+    provenance = data['provenance'].copy()
+    identity = provenance.pop('identity_sha256')
+    from mawi_global_analysis.hashing import stable_json_hash
+    assert identity == stable_json_hash(provenance)
+    assert provenance['frequency_export'] == descriptor
+    assert before == {p:sha256_file(p) for p in byte_saved[0].rglob('*') if p.is_file()}
+
+
+def test_exact_export_keeps_distinct_packet_counts_inside_one_bin(byte_saved,tmp_path):
+    import csv
+    flows = byte_saved[2]['flows'][1].copy()
+    flows['packet_count'] = [4,5,6,7,100,9]
+    flows['byte_count'] = [60,120,700,230,1000,9999]
+    rewrite(byte_saved,'flows',flows)
+    path = export_stats(byte_saved,tmp_path/'within-bin')
+    data = json.loads(path.read_text())
+    union = next(t for t in data['references'] if t['prefix']=='selected_union')
+    assert union['stats']['packet_total'] == 22
+    assert max(union['counts']) == 4
+    with path.with_name('frequencies.csv').open(newline='') as stream:
+        rows = [r for r in csv.DictReader(stream) if r['distribution']=='selected_union']
+    assert [(int(r['packet_count']),int(r['frequency'])) for r in rows] == [(4,1),(5,1),(6,1),(7,1)]
+
+
+def test_statistics_and_exact_export_are_chunk_invariant(byte_saved,tmp_path):
+    first = analyze(byte_saved,chunksize=1)
+    second = analyze(byte_saved,chunksize=100)
+    assert first == second
+    a = export_stats(byte_saved,tmp_path/'chunk-one',chunksize=1)
+    b = export_stats(byte_saved,tmp_path/'chunk-large',chunksize=100)
+    assert a.with_name('frequencies.csv').read_bytes() == b.with_name('frequencies.csv').read_bytes()
+    assert json.loads(a.read_text()) == json.loads(b.read_text())
+
+
+def test_large_totals_are_exact_and_html_does_not_round_them(byte_saved,tmp_path):
+    maximum = 2**63-1
+    flows = byte_saved[2]['flows'][1].copy()
+    flows['byte_count'] = maximum
+    flows['packet_count'] = maximum
+    rewrite(byte_saved,'flows',flows)
+    data = analyze(byte_saved)
+    union = data['references'][0]
+    assert union['stats']['packet_total'] == 4*maximum
+    assert union['stats']['byte_total'] == 4*maximum
+    path = export_stats(byte_saved,tmp_path/'large')
+    assert json.loads(path.read_text())['references'][0]['stats']['byte_total'] == 4*maximum
+    html = dashboard().render_dashboard(data)
+    embedded = json.loads(re.search(r'<script id="dashboard-data" type="application/json">(.*?)</script>',html,re.S)[1])
+    assert embedded['references'][0]['stats']['byte_total'] == str(4*maximum)
+    assert data['references'][0]['stats']['byte_total'] == 4*maximum
+
+
+def test_empty_statistics_export_has_header_only_and_null_means(byte_saved,tmp_path):
+    rewrite(byte_saved,'flows',byte_saved[2]['flows'][1].iloc[:0])
+    rewrite(byte_saved,'flow_prefix_membership',byte_saved[2]['flow_prefix_membership'][1].iloc[:0])
+    fm = byte_saved[2]['flows'][0].parent/'flow_manifest.json'
+    manifest = json.loads(fm.read_text());manifest['row_count']=0;fm.write_text(json.dumps(manifest))
+    path = export_stats(byte_saved,tmp_path/'empty')
+    data = json.loads(path.read_text())
+    for target in data['prefixes']+data['references']:
+        assert target['stats']['flow_count'] == target['stats']['packet_total'] == target['stats']['byte_total'] == 0
+        assert target['stats']['mean_packet_count'] is None
+    assert path.with_name('frequencies.csv').read_text().splitlines() == ['distribution,packet_count,frequency']
+
+
+def test_export_rejects_existing_or_protected_directories(byte_saved,tmp_path):
+    occupied = tmp_path/'occupied';occupied.mkdir()
+    with pytest.raises(FileExistsError):
+        export_stats(byte_saved,occupied)
+    assert list(occupied.iterdir()) == []
+    for location in (byte_saved[0]/'data/export',byte_saved[1].parent/'export'):
+        with pytest.raises(ValueError): export_stats(byte_saved,location)
+        assert not location.exists()
+    cache = tmp_path/'external-cache';cache.mkdir()
+    (cache/'flow_manifest.json').write_text('{}')
+    with pytest.raises(ValueError): export_stats(byte_saved,cache/'export')
+
+
+def test_export_failure_or_input_change_does_not_publish_bundle(byte_saved,tmp_path):
+    def change(name,count):
+        if name=='flows':
+            with byte_saved[2]['flows'][0].open('a') as stream: stream.write('\n')
+    output = tmp_path/'changed'
+    before = set(tmp_path.iterdir())
+    with pytest.raises(ValueError,match='changed'):
+        export_stats(byte_saved,output,progress=change)
+    assert not output.exists()
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_default_payload_and_html_do_not_embed_exact_frequency_arrays(byte_saved):
+    data = analyze(byte_saved)
+    assert 'frequencies' not in data
+    assert 'artifacts' not in data
+    html = dashboard().render_dashboard(data)
+    embedded = json.loads(re.search(r'<script id="dashboard-data" type="application/json">(.*?)</script>',html,re.S)[1])
+    assert 'frequencies' not in embedded
+    for old,new in zip(data['prefixes']+data['references'],embedded['prefixes']+embedded['references']):
+        assert old['counts'] == new['counts']
+        for key in ('flow_count','median','p95','one_packet_rate'):
+            assert old['stats'][key] == new['stats'][key]
+
+
+def test_export_preserves_frequencies_greater_than_one(byte_saved,tmp_path):
+    import csv
+    flows = byte_saved[2]['flows'][1].copy()
+    flows['packet_count'] = [1,1,10,10,100,9]
+    rewrite(byte_saved,'flows',flows)
+    path = export_stats(byte_saved,tmp_path/'repeated')
+    with path.with_name('frequencies.csv').open(newline='') as stream:
+        rows = [r for r in csv.DictReader(stream) if r['distribution']=='selected_union']
+    assert [(int(r['packet_count']),int(r['frequency'])) for r in rows] == [(1,2),(10,2)]
+    stats = json.loads(path.read_text())['references'][0]['stats']
+    assert stats['flow_count'] == 4 and stats['packet_total'] == 22
+
+
+def test_legacy_frequency_adapter_does_not_invent_byte_total():
+    import sqlite3
+    with sqlite3.connect(':memory:') as db:
+        db.execute('CREATE TABLE dist (target TEXT, packets INTEGER, n INTEGER)')
+        db.executemany('INSERT INTO dist VALUES (?,?,?)',[('adapter',1,2),('adapter',7,3)])
+        record = analysis().summarize_frequencies(db,'adapter',analysis().HistogramSpec(count_axis_upper=10))
+        assert record['stats']['flow_count'] == 5
+        assert record['stats']['packet_total'] == 23
+        assert record['stats']['mean_packet_count'] == 4.6
+        assert record['stats']['byte_total'] is None
+
+
+@pytest.mark.parametrize('value', [-1, 'bad', 2**63])
+def test_invalid_canonical_byte_count_is_rejected(byte_saved,value):
+    flows = byte_saved[2]['flows'][1].astype(object)
+    flows.loc[0,'byte_count'] = value
+    rewrite(byte_saved,'flows',flows)
+    with pytest.raises(ValueError,match='flows.byte_count'):
+        analyze(byte_saved)
+
+
+def test_failed_publication_removes_only_its_own_partial_bundle(byte_saved,tmp_path,monkeypatch):
+    import os
+    real_link = os.link
+    def fail_summary(source,destination,*args,**kwargs):
+        if Path(destination).name=='summary.json':
+            raise OSError('simulated publication failure')
+        return real_link(source,destination,*args,**kwargs)
+    monkeypatch.setattr(os,'link',fail_summary)
+    before = set(tmp_path.iterdir())
+    output = tmp_path/'failed-publication'
+    with pytest.raises(OSError,match='publication failure'):
+        export_stats(byte_saved,output)
+    assert not output.exists()
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_bad_membership_cannot_publish_statistics_bundle(byte_saved,tmp_path):
+    membership = byte_saved[2]['flow_prefix_membership'][1]
+    rewrite(byte_saved,'flow_prefix_membership',membership.loc[membership.analysis_scope.ne('normalized_24')])
+    output = tmp_path/'incomplete-membership'
+    with pytest.raises(ValueError,match='membership'):
+        export_stats(byte_saved,output)
+    assert not output.exists()
