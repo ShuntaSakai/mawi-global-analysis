@@ -30,6 +30,9 @@ background only unless a current task explicitly asks for historical context.
 For the separate flow-count RLS condition, its controls, fork management and
 shared Raw /24 dashboard, also read [the Agurim prime guide](../guide/agurim-prime.md).
 
+For read-only validation of saved packet/byte/flow runs at threshold 1% and
+disable-heuristics 2, read [the RLS weight comparison guide](../guide/rls-weight-comparison.md).
+
 ## Authority and scope
 
 The research contract is the current repository-wide semantic authority.

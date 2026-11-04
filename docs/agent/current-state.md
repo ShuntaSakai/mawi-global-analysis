@@ -102,6 +102,24 @@ Final verification: focused prime/C/normalized24 tests 84 passed; full suite
 review findings were fixed and closure reviewed. No real MAWI execution or
 large-data performance validation is claimed.
 
+## RLS weight comparison phase 1 (2026-11-04)
+
+A read-only validation API and `--validate-only` CLI check three saved
+canonical-input packet/byte/flow runs for the same input/build/implementation
+identity, threshold 1%, disable-heuristics 2, corrected selection and Raw
+normalized-/24 evaluation settings. They reuse existing run/cache/producer
+checks, verify artifact hashes and row counts and reconstruct the corrected
+prefix ledger. They do not execute RLS or compute ECDF/coverage, and do not
+reconstruct every membership edge. See [the comparison guide](../guide/rls-weight-comparison.md).
+
+The pre-change full-suite baseline on 2026-11-04 was 686 passed and the same
+three Notebook 06 failures recorded above. Final verification: new validation
+tests 63 passed; full suite 749 passed and those same three failures;
+`git diff --check` passed. Three independent-review findings about converter
+audit consistency/type handling and mandatory build provenance were reproduced
+with 12 failing regression cases and fixed. Synthetic verification of this new
+phase is separate from real MAWI validation; no scientific result is asserted.
+
 ## Real-data validated
 
 No completed raw-PCAP end-to-end validation is recorded here. The existing

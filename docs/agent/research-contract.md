@@ -49,6 +49,12 @@ provenance updates where applicable.
   actual fork commit (null until published), executable checksum and converter
   identity. Keep its runs/caches separate from original Agurim. Operational and
   evidence details are in [the prime guide](../guide/agurim-prime.md).
+- The phase-1 RLS weight comparator validates saved packet/byte/flow contracts
+  at 1% with `-D -D`, identical canonical/binary/build identities and corrected
+  Raw normalized-/24 settings. Mode-specific config hashes and prime fingerprints
+  are verified within each run, not required to match across modes. Validation
+  is read-only; it does not reconstruct all membership edges or compute
+  distributions/coverage. Details: [comparison guide](../guide/rls-weight-comparison.md).
 
 ## Scan-like classification and removal
 
