@@ -1,6 +1,7 @@
 """Read-only dedicated two-stage lineage and three-weight comparison validation."""
 from __future__ import annotations
 from pathlib import Path
+import io
 import pandas as pd
 import yaml
 import re
@@ -16,6 +17,15 @@ from mawi_global_analysis.agurim_prime.stage import _json,_source
 SCHEMA='aguri-two-stage-validation-v1'
 def equal(key,a,b):
     if type(a) is not type(b) or a!=b:raise ValueError(f'{key}: expected {b!r}; got {a!r}')
+
+def _validate_prefix_ledger(candidate_path: Path,cfg: ExperimentConfig,ledger_path: Path) -> None:
+    expected=build_corrected_prefix_ledger(pd.read_csv(candidate_path),cfg)
+    # Compare the CSV writer's representation: None becomes an empty cell.
+    # Strings preserve exact integer/flag text; do not coerce or round values.
+    expected=pd.read_csv(io.StringIO(expected.to_csv(index=False)),dtype=str,keep_default_na=False)
+    actual=pd.read_csv(ledger_path,dtype=str,keep_default_na=False)
+    try:pd.testing.assert_frame_equal(expected,actual,check_exact=True)
+    except AssertionError as e:raise ValueError(f'corrected prefix ledger differs from stage2 candidates: {e}') from e
 
 def inspect_lineage(info,root,inputs):
     m=info.manifest;s=m.get('selection',{});mode=s.get('basis')
@@ -46,9 +56,7 @@ def inspect_lineage(info,root,inputs):
     for e in (candidate,info.entries['prefixes'],info.entries['flow_prefix_membership']):
         p=e.get('producer',{})
         for k,v in {'two_stage_fingerprint':fp,'two_stage_candidates_sha256':sha256_file(candidate_path),'cache_manifest_sha256':sha256_file(path)}.items():equal('producer.'+k,p.get(k),v)
-    expected=build_corrected_prefix_ledger(pd.read_csv(candidate_path),cfg)
-    try:pd.testing.assert_frame_equal(expected,pd.read_csv(info.paths['prefixes'],keep_default_na=False),check_dtype=False)
-    except AssertionError as e:raise ValueError('corrected prefix ledger differs from stage2 candidates') from e
+    _validate_prefix_ledger(candidate_path,cfg,info.paths['prefixes'])
     return dict(fingerprint=fp,identity=identity,audits=actual['audits'],cache_manifest_path=str(path),cache_manifest_sha256=sha256_file(path),candidate_sha256=sha256_file(candidate_path))
 
 def validate_runs(root: Path,dataset_id: str,*,packet_run: str,byte_run: str,flow_run: str,chunksize=100000):
