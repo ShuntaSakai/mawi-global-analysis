@@ -69,6 +69,8 @@ def refresh_dashboard(manifest_path: Path, output_dir: Path, *, scratch_dir: Pat
     manifest=json.loads(manifest_bytes)
     if verify_comparison_manifest(source)!=manifest:
         raise ValueError('source comparison manifest changed during snapshot')
+    if manifest.get('native_extension') is not None:
+        raise ValueError('native-extended bundles must be regenerated with --include-native from their normalized source')
     output=Path(output_dir).expanduser()
     if output.is_symlink():raise FileExistsError(f'existing output symlink: {output}')
     output=output.resolve()

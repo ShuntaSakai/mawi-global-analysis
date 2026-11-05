@@ -95,6 +95,8 @@ def verify_comparison_manifest(path: Path) -> dict:
     if not isinstance(entries,dict):
         raise ValueError('comparison_manifest.artifacts: expected an object')
     _verify_artifacts(path.parent,entries)
+    from .native_generation import verify_native_extension
+    verify_native_extension(manifest)
     return manifest
 
 

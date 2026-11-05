@@ -18,8 +18,9 @@ async function testDashboard(page) {
   try {
     await page.reload({waitUntil: 'load'});
     const payload = await page.locator('#dashboard-data').textContent().then(JSON.parse);
+    const native=payload.evaluation_scope==='native';
     const tabs = page.getByRole('tab');
-    assert(await tabs.count() === 5, 'Five accessible tabs are required');
+    assert(await tabs.count() === (native?6:5), 'Accessible tab count differs from evaluation scope');
     assert(await page.locator('script[src],link[rel=stylesheet],iframe,img').count() === 0,
       'Dashboard must not fetch external UI resources or interpret payload markup');
     // Once loaded, every interaction must work without network connectivity.
@@ -101,18 +102,18 @@ async function testDashboard(page) {
     await selectTab('Prefix Analysis');
     const prefixes = payload.prefixes || [];
     if (prefixes.length) {
-      const target = prefixes[0].prefix_24;
+      const target = prefixName(prefixes[0]);
       await page.locator('#prefix-search').fill(target);
       const rows = await page.locator('#prefix-body tr').allTextContents();
       assert(rows.length && rows.every(text => text.includes(target)), 'Prefix search failed');
       await page.locator('#prefix-search').fill('__no_matching_prefix__');
-      assert((await page.locator('#prefix-body').innerText()).includes('該当する/24がありません'),
+      assert((await page.locator('#prefix-body').innerText()).includes(payload.evaluation_scope==='native'?'該当するprefixがありません':'該当する/24がありません'),
         'Empty search state failed');
       await page.locator('#prefix-search').fill('');
       for (const mode of ['packet', 'byte', 'flow', 'overlap']) {
         await page.locator('#prefix-mode').selectOption(mode);
         const keys = await page.locator('#prefix-body tr[data-prefix]').evaluateAll(rows => rows.map(r => r.dataset.prefix));
-        assert(keys.every(key => prefixes.some(p => p.prefix_24 === key &&
+        assert(keys.every(key => prefixes.some(p => prefixName(p) === key &&
           (mode === 'overlap' ? p.modes.length > 1 : p.modes.includes(mode)))), 'Mode filter failed: ' + mode);
       }
       await page.locator('#prefix-mode').selectOption('all');
@@ -144,12 +145,12 @@ async function testDashboard(page) {
       }
       const scatterTarget = prefixes.find(p => Number(p.stats?.flow_count) > 0 && Number(p.stats?.mean_packet_count) > 0);
       if (scatterTarget) {
-        await page.locator('#prefix-search').fill(scatterTarget.prefix_24);
+        await page.locator('#prefix-search').fill(prefixName(scatterTarget));
         await page.locator('#scatter-canvas').scrollIntoViewIfNeeded();
         const canvas = await page.locator('#scatter-canvas').boundingBox();
         await page.mouse.move(canvas.x + 524 / 1000 * canvas.width, canvas.y + 208.5 / 460 * canvas.height);
         const hover = await page.locator('#tooltip').innerText();
-        assert(hover.includes(scatterTarget.prefix_24) &&
+        assert(hover.includes(prefixName(scatterTarget)) &&
           hover.includes('flow_count: ' + scatterTarget.stats.flow_count) &&
           hover.includes('mean_packet_count: ' + scatterTarget.stats.mean_packet_count) &&
           hover.includes('packet_total: ' + scatterTarget.stats.packet_total) &&
@@ -159,9 +160,19 @@ async function testDashboard(page) {
       }
       result.tableSearchFilterSortPaging = true;
     } else {
-      assert((await page.locator('#prefix-body').innerText()).includes('該当する/24がありません'),
+      assert((await page.locator('#prefix-body').innerText()).includes(payload.evaluation_scope==='native'?'該当するprefixがありません':'該当する/24がありません'),
         'Empty prefix state failed');
       result.emptyPrefixes = true;
+    }
+    if(native){
+      if(prefixes.length){
+        await page.locator('#prefix-search').fill(prefixName(prefixes[0]));
+        await page.locator('#prefix-body tr[data-prefix] td').first().click();
+        assert(await page.locator('#tab-per-prefix').getAttribute('aria-selected')==='true','Native table row must open individual ECDF');
+        assert(await page.locator('#pp-stats tr[data-prefix]').count()===1,'Native row link must select one independent prefix');
+        result.nativeRowLink=true;
+      }
+      result.scopeComparison=await testScopeComparison(page,payload,assert);
     }
     await selectTab('Experiment Details');
     assert((await page.locator('#provenance').innerText()).includes('保存済み記録'), 'Provenance panel failed');
@@ -175,13 +186,15 @@ async function testDashboard(page) {
   }
 }
 
+function prefixName(p){return p.prefix??p.prefix_24;}
+
 async function testPerPrefix(page, payload, assert) {
   await page.getByRole('tab', {name:'Per-Prefix Flow Size Distribution', exact:true}).click();
   const prefixes=payload.prefixes||[],curves=payload.per_prefix_ecdf?.curves||{};
   const mode=['packet','byte','flow'].reduce((a,b)=>prefixes.filter(p=>p.modes.includes(a)).length>=prefixes.filter(p=>p.modes.includes(b)).length?a:b,'packet');
   await page.locator('#pp-mode').selectOption(mode);
   await page.locator('#pp-search').fill('__absent__');
-  assert((await page.locator('#pp-options').innerText()).includes('該当する/24がありません'),'Per-prefix empty search failed');
+  assert((await page.locator('#pp-options').innerText()).includes(payload.evaluation_scope==='native'?'該当するprefixがありません':'該当する/24がありません'),'Per-prefix empty search failed');
   await page.locator('#pp-search').fill('');
   const eligible=prefixes.filter(p=>p.modes.includes(mode));
   if(eligible.length>20){
@@ -190,20 +203,20 @@ async function testPerPrefix(page, payload, assert) {
     await page.locator('#pp-prev').click();
   }
   for(const p of eligible.slice(0,5)){
-    await page.locator('#pp-search').fill(p.prefix_24);
+    await page.locator('#pp-search').fill(prefixName(p));
     await page.locator('#pp-options input[type=checkbox]').check();
   }
   const selected=eligible.slice(0,5);
   const paths=page.locator('#pp-svg [data-prefix-curve]');
-  assert(await paths.count()===selected.filter(p=>JSON.parse(curves[p.prefix_24]?.encoded_points||'[]').length).length,'Individual curves must stay separate');
+  assert(await paths.count()===selected.filter(p=>JSON.parse(curves[prefixName(p)]?.encoded_points||'[]').length).length,'Individual curves must stay separate');
   for(const p of selected){
-    const row=page.locator('#pp-stats tr[data-prefix]').filter({has:page.locator('td:first-child',{hasText:p.prefix_24})});
+    const row=page.locator('#pp-stats tr[data-prefix]').filter({has:page.locator('td:first-child',{hasText:prefixName(p)})});
     for(const [i,key] of ['flow_count','packet_total','byte_total','median','p95','mean_packet_count','one_packet_rate'].entries()){
       assert(await row.locator('td').nth(i+1).getAttribute('title')===String(p.stats?.[key]??'—'),'Individual exact statistics lost: '+key);
     }
   }
   if(eligible.length>5){
-    await page.locator('#pp-search').fill(eligible[5].prefix_24);
+    await page.locator('#pp-search').fill(prefixName(eligible[5]));
     assert(await page.locator('#pp-options input[type=checkbox]').isDisabled(),'Sixth prefix must be disabled');
   }
   for(const id of ['pp-overall','pp-union']){
@@ -216,14 +229,14 @@ async function testPerPrefix(page, payload, assert) {
   assert(Number(await svg.getAttribute('data-x-max'))-Number(await svg.getAttribute('data-x-min'))<Number(max)-Number(min),'Prefix zoom failed');
   await page.locator('#pp-reset').click();
   assert(await svg.getAttribute('data-x-max')===max,'Prefix reset failed');
-  const withPoints=selected.filter(p=>JSON.parse(curves[p.prefix_24]?.encoded_points||'[]').length);
+  const withPoints=selected.filter(p=>JSON.parse(curves[prefixName(p)]?.encoded_points||'[]').length);
   for(const visible of withPoints){
     await svg.scrollIntoViewIfNeeded();
-    const point=JSON.parse(curves[visible.prefix_24].encoded_points)[0],box=await svg.boundingBox();
+    const point=JSON.parse(curves[prefixName(visible)].encoded_points)[0],box=await svg.boundingBox();
     const px=78+(Math.log10(Number(point.packet_count))-Number(min))/(Number(max)-Number(min))*892;
     await page.mouse.move(box.x+Math.max(78.1,Math.min(969.9,px))/1000*box.width,box.y+box.height*.5);
     const hover=await page.locator('#tooltip').innerText();
-    assert(hover.includes(visible.prefix_24+': packet_count '+point.packet_count+' · F(x) '+point.cumulative_fraction),'Each prefix must show its OWN saved point, not a mixed or averaged distribution');
+    assert(hover.includes(prefixName(visible)+': packet_count '+point.packet_count+' · F(x) '+point.cumulative_fraction),'Each prefix must show its OWN saved point, not a mixed or averaged distribution');
   }
   await svg.scrollIntoViewIfNeeded();
   const box=await svg.boundingBox();
@@ -239,7 +252,7 @@ async function testPerPrefix(page, payload, assert) {
   await page.locator('#pp-download').click();
   assert((await downloadPromise).suggestedFilename()==='rls-per-prefix-ecdf.svg','Prefix SVG save failed');
   if(selected.length){
-    await page.locator('#pp-search').fill(selected[0].prefix_24);
+    await page.locator('#pp-search').fill(prefixName(selected[0]));
     await page.locator('#pp-options input[type=checkbox]').uncheck();
     assert(await page.locator('#pp-stats tr[data-prefix]').count()===selected.length-1,'Prefix deselection failed');
   }
@@ -248,6 +261,43 @@ async function testPerPrefix(page, payload, assert) {
   await page.locator('#pp-clear').click();
   await page.locator('#pp-search').fill('');
   return {search:true,separateCurves:true,exactStats:true,maxFive:eligible.length>5,toggles:true,zoom:true,svg:true,deselection:true,modeSwitch:true};
+}
+
+async function testScopeComparison(page,payload,assert){
+  await page.getByRole('tab',{name:'Scope Comparison',exact:true}).click();
+  for(const mode of ['packet','byte','flow']){
+    await page.locator('#scope-mode').selectOption(mode);
+    const record=payload.scope_comparison[mode];
+    for(const key of ['flow_count','packet_total','byte_total','mean_packet_count','median','p95','one_packet_rate','flow_coverage']){
+      const row=page.locator('#scope-stats tr[data-stat='+key+']');
+      for(const [index,prefix] of ['native_','normalized24_'].entries())
+        assert(await row.locator('td').nth(index+1).getAttribute('title')===String(record[prefix+key]??'—'),'Scope table differs from saved exact statistics');
+    }
+    assert((await page.locator('#scope-ks').innerText()).includes(String(record.ks_numerator??'—')+' / '+String(record.ks_denominator??'—')),'Scope exact KS lost');
+    for(const key of ['overall','native','normalized24']){
+      const name=key==='overall'?'overall_ipv4':key==='native'?mode:'normalized_'+mode;
+      const nonempty=!!payload.scope_ecdf[name]?.points?.length;
+      const button=page.locator('[data-scope-series='+key+']');
+      await button.click();assert(await page.locator('[data-scope-curve='+key+']').count()===0,'Scope toggle did not hide curve');
+      await button.click();assert(await page.locator('[data-scope-curve='+key+']').count()===Number(nonempty),'Scope toggle did not restore curve');
+      const point=payload.scope_ecdf[name]?.points?.[0];
+      if(point){
+        const svg=page.locator('#scope-svg');await svg.scrollIntoViewIfNeeded();const box=await svg.boundingBox();
+        const min=Number(await svg.getAttribute('data-x-min')),max=Number(await svg.getAttribute('data-x-max'));
+        const px=Math.max(78.1,Math.min(969.9,78+(Math.log10(Number(point.packet_count))-min)/(max-min)*892));
+        await page.mouse.move(box.x+px/1000*box.width,box.y+box.height*.5);
+        const hover=await page.locator('#tooltip').innerText();
+        const label=key==='overall'?'Overall':mode+(key==='native'?' native':' normalized /24');
+        assert(hover.includes(label+': packet_count '+point.packet_count+' · F(x) '+point.cumulative_fraction),'Scope hover mixes distributions');
+      }
+    }
+  }
+  const svg=page.locator('#scope-svg'),max=await svg.getAttribute('data-x-max');
+  await page.locator('#scope-zoom-in').click();assert(Number(await svg.getAttribute('data-x-max'))<Number(max),'Scope zoom failed');
+  await page.locator('#scope-reset').click();assert(await svg.getAttribute('data-x-max')===max,'Scope reset failed');
+  const pending=page.waitForEvent('download');await page.locator('#scope-download').click();
+  assert((await pending).suggestedFilename()==='rls-native-normalized24-ecdf.svg','Scope SVG failed');
+  return {sameSelectionThreeModes:true,exactTables:true,separateCurves:true,toggles:true,hover:true,zoom:true,svg:true};
 }
 
 if (typeof module !== 'undefined') module.exports = {testDashboard};

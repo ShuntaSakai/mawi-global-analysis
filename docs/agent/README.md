@@ -46,3 +46,6 @@ Experiment configs provide the current settings for named experiments. Code and
 tests establish the implemented behavior and verification evidence. If these
 disagree, do not silently choose one: identify the discrepancy and ask for a
 research/design decision when it changes semantics.
+
+For native-prefix evaluation of fixed packet/byte/flow selections and direct
+native-versus-normalized24 scope comparisons, read [the native comparison guide](../guide/rls-native-comparison.md).

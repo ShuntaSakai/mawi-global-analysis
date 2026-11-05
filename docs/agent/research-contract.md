@@ -112,3 +112,15 @@ Passing fixtures, tests, or verified golden artifacts establishes
 implementation verification only. It does not establish real-data validation
 or a scientific conclusion. State those evidence levels separately in reports
 and documentation.
+
+## Native scope comparison extension
+
+The optional native comparison keeps the successful RLS selection sets fixed and
+uses saved `analysis_scope=native` edges without /24 expansion. Per-prefix and
+union populations use canonical observations and flow_id deduplication. Both
+saved membership scopes are checked for unique, correct and complete edges;
+native union is verified to be a subset of normalized24 union by ID. Statistics
+reuse the normalized24 quantile/total conventions. The new native HTML and scope
+comparison are separate from the preserved normalized artifacts; an additive
+native extension in the comparison manifest binds actual input paths/hashes,
+exact outputs and checked invariants. See [the native guide](../guide/rls-native-comparison.md).

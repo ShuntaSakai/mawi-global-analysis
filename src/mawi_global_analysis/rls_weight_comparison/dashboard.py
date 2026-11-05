@@ -21,7 +21,7 @@ def _browser_numbers(value):
     return value
 
 
-def render_dashboard(payload: dict) -> str:
+def render_dashboard(payload: dict, *, template: str | None = None) -> str:
     """Return offline HTML with an inert, escaped JSON payload and hashed script.
 
     All analytical values are supplied by the comparison backend. This function
@@ -31,7 +31,8 @@ def render_dashboard(payload: dict) -> str:
     for char, escape in (('&', '\\u0026'), ('<', '\\u003c'), ('>', '\\u003e'),
                          ('\u2028', '\\u2028'), ('\u2029', '\\u2029')):
         encoded = encoded.replace(char, escape)
-    template = Path(__file__).with_name('dashboard.html').read_text(encoding='utf-8')
+    if template is None:
+        template = Path(__file__).with_name('dashboard.html').read_text(encoding='utf-8')
     scripts = re.findall(r'<script>(.*?)</script>', template, re.S)
     if (len(scripts) != 1 or template.count('__DASHBOARD_SCRIPT_HASH__') != 1
             or template.count('__DASHBOARD_DATA__') != 1):

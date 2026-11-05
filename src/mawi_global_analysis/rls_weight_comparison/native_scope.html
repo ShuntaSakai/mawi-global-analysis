@@ -1,0 +1,10 @@
+<section id="scope" role="tabpanel" aria-labelledby="tab-scope" hidden>
+<h2>Native vs Normalized /24 · Scope Comparison</h2>
+<p class="muted">同じモードの選定native prefix集合を固定し、評価範囲だけを変更します。再選定・top-k・件数の調整は行いません。</p>
+<div class="panel"><div class="toolbar"><label>比較モード <select id="scope-mode"><option>packet</option><option>byte</option><option>flow</option></select></label><span class="caption">Overall + native union + normalized /24 union</span></div>
+<div id="scope-legend" class="toolbar"></div><div class="toolbar"><button id="scope-zoom-in">拡大 ＋</button><button id="scope-zoom-out">縮小 −</button><button id="scope-reset">表示範囲をリセット</button><span class="spacer"></span><button id="scope-download">SVGを保存</button></div>
+<div class="chart-frame"><svg id="scope-svg" class="chart" viewBox="0 0 1000 460" role="img" aria-label="Native versus normalized24 union ECDF"></svg></div>
+<p id="scope-status" class="caption" role="status"></p><div id="scope-reduction"></div></div>
+<div class="panel"><h3>同じ選定集合での正確な分布統計</h3><div class="table-wrap" id="scope-stats"></div><p id="scope-ks" class="caption"></p></div>
+<div class="note">nativeは抽出CIDRそのもの、normalized /24はそれらの親/24全体です。両者ともsrc OR dstで所属し、union内のflow_idは一意です。native unionがnormalized24 unionの部分集合であることをID単位で検証しています。KS型距離は整数度数に基づく記述統計であり、p値ではありません。縮約した階段は下界、帯は上界です。正確な度数はnative_ecdf_counts.csv、ecdf_counts.csv、scope_ecdf_counts.csvに保持されています。</div>
+</section>

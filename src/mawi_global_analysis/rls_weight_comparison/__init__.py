@@ -5,3 +5,6 @@ from .generation import generate_comparison, verify_comparison_manifest
 from .refresh import refresh_dashboard
 
 __all__ = ['ComparisonValidationError', 'validate_comparison', 'generate_comparison', 'verify_comparison_manifest', 'refresh_dashboard']
+
+from .native_generation import generate_native_comparison
+__all__.append('generate_native_comparison')
