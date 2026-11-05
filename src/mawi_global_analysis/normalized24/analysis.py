@@ -277,7 +277,15 @@ def _analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
     is_prime = ('agurim_prime' in info.manifest.get('cache',{})
                 or 'agurim_prime_candidates' in info.manifest.get('artifacts',{})
                 or info.manifest.get('schema_version') == 'agurim-prime-run-v1')
-    if is_prime:
+    is_two = ('aguri_two_stage' in info.manifest.get('cache',{})
+              or info.manifest.get('schema_version') == 'aguri-two-stage-run-v1')
+    if is_two and is_prime:
+        raise ValueError('ambiguous prime/two-stage selection provenance')
+    if is_two:
+        from mawi_global_analysis.aguri_two_stage.validation import inspect_lineage
+        lineage = inspect_lineage(info,root,inputs)
+        method = info.manifest['selection']['method']
+    elif is_prime:
         from mawi_global_analysis.agurim_prime.stage import inspect_prime_lineage
         lineage = inspect_prime_lineage(info,root,inputs)
         method = info.manifest['selection']['method']
@@ -309,13 +317,15 @@ def _analyze_agurim_run(root: Path, dataset_id: str, run_name: str, *,
             db.close()
     if inputs != _input_hashes(info,root):
         raise ValueError('input files changed during /24 analysis')
+    if is_two and lineage != inspect_lineage(info,root,inputs):
+        raise ValueError('two-stage lineage changed during /24 analysis')
     if is_prime and lineage != inspect_prime_lineage(info,root,inputs):
         raise ValueError('prime lineage changed during /24 analysis')
     provenance = {
         'inputs':inputs,'input_capture_sha256':info.manifest['input']['sha256'],
         'dataset_id':dataset_id,'run_name':run_name,'config_sha256':info.manifest['config']['hash'],
         'config':info.manifest['config']['text'],'source_git_commit':info.manifest.get('git_commit'),
-        **({'agurim_prime_lineage':lineage} if is_prime else {'aguri_lineage':lineage}),
+        **({'aguri_two_stage_lineage':lineage} if is_two else {'agurim_prime_lineage':lineage} if is_prime else {'aguri_lineage':lineage}),
         'source_evidence':info.manifest.get('evidence_level','saved_artifact_analysis'),
         'selection':{'method':method,'native':'selected_for_analysis=True',
                      'normalization':'normalized_prefix_24; deduplicate /24', 'additional_filters':[]},

@@ -53,3 +53,8 @@ native-versus-normalized24 scope comparisons, read [the native comparison guide]
 For the dedicated legacy Aguri unfiltered / IPv4-TCP-UDP BPF / canonical packet
 Agurim-prime experiment, use [the A/B/C guide](../guide/aguri-selection-comparison.md).
 It has its own validation contract and does not reuse the three-weight validator.
+
+For canonical-input **Aguri3→Agurim two-stage** packet/byte/flow experiments, read
+[the two-stage guide](../guide/aguri-two-stage.md). This separate fork/validator
+keeps the legacy RLS and fixed packet quickmerge, exact residual wire and immutable
+new runs; it does not replace the direct-prime or legacy conditions.

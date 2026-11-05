@@ -5,7 +5,7 @@ import re
 from .dashboard import render_dashboard
 
 
-def render_native_dashboard(payload: dict) -> str:
+def render_native_dashboard(payload: dict, *, template_transform=None) -> str:
     """Adapt trusted template text BEFORE injecting untrusted analytical values.
 
     The shared normalized template is unchanged. Native payloads use `prefix`,
@@ -35,4 +35,6 @@ def render_native_dashboard(payload: dict) -> str:
     template=template.replace("['表示条件・ECDF削減設定',provenance.display]","['表示条件・ECDF削減設定',provenance.display],['Native評価の来歴と検証済み不変条件',provenance.native_extension]")
     script=(folder/'native_scope.js').read_text(encoding='utf-8')
     template=template.replace('})();\n</script>',script+'\n})();\n</script>')
+    if template_transform is not None:
+        template=template_transform(template)  # trusted experiment adapter, before untrusted payload insertion
     return render_dashboard(payload,template=template)

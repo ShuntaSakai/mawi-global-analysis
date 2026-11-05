@@ -137,3 +137,19 @@ aggregation and input format. Exact-CIDR exclusion rebuilds the union from
 remaining edges; shared flows survive. A supplied Notebook export match does
 not independently authenticate the original conference execution. Details are
 in [the A/B/C guide](../guide/aguri-selection-comparison.md).
+
+## Canonical two-stage Aguri experiment
+
+The new Aguri3→Agurim condition uses the same bidirectional canonical records and
+independent packet/byte/flow counters in both existing C RLS stages. Main defaults
+are 1% and heuristics0 in both stages, no intervals/top-k. The legacy packet-based
+quickmerge remains fixed across modes. Versioned residual transport retains exact
+counters and label bits; protocol deficits are audit metadata, never added HHH
+candidates, while the old no-label fallback is preserved. The weighted path uses
+a deterministic ready/empty buffer handoff to prevent upstream scheduling from
+changing first-stage blocks; legacy AGR behavior is retained separately. Evaluate
+native membership from canonical data rather than HHH residuals. The dedicated
+validator binds both commands, binary/build/patch/input/wire hashes and actual
+records without relaxing the direct-prime comparator. See
+[the two-stage guide](../guide/aguri-two-stage.md) for unavoidable old-wire and
+scheduling differences, immutable contracts and evidence limits.

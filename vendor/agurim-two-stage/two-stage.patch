@@ -1,0 +1,639 @@
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -2,7 +2,7 @@
+ INSTALL?=	/usr/bin/install
+ 
+ PROGS = agurim aguri3
+-COMMON_OBJS = odflow.o hhh.o agurim_plot.o agurim_subr.o
++COMMON_OBJS = odflow.o hhh.o agurim_plot.o agurim_subr.o weights.o
+ AGURIM_OBJS = agurim.o $(COMMON_OBJS)
+ AGURI3_OBJS = aguri3.o pcap_parse.o ip_parse.o $(COMMON_OBJS)
+ DEFINES = -DINET6
+--- a/src/aguri3.c
++++ b/src/aguri3.c
+@@ -51,6 +51,7 @@
+ #include <paths.h>
+ #include <signal.h>
+ #include <pthread.h>
++#include <stdatomic.h>
+ #ifdef __FreeBSD__
+ #include <pthread_np.h>
+ #endif
+@@ -65,7 +66,7 @@
+ struct saved_results {
+ 	time_t start_time;
+ 	time_t end_time;
+-	uint64_t total_byte, total_packet;
++	uint64_t total_byte, total_packet, total_flow;
+ 	struct odf_tailq odfq;  /* odflow queue for results */
+ };
+ 
+@@ -98,8 +99,20 @@
+ 
+ static volatile sig_atomic_t gotsig_close, gotsig_hup;
+ static uint64_t epoch = 0;	/* interval epoch for the main thread */
+-static int exiting = 0;
++static _Atomic int exiting = 0;
++static _Atomic uint64_t final_epoch;
+ static pthread_mutex_t resp_mutex[2];
++/* The legacy producer can lap the consumer and reuse an unprocessed buffer.
++ * Weighted runs rendezvous at each handoff so block boundaries are invariant. */
++static pthread_mutex_t handoff_mutex = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t handoff_cond = PTHREAD_COND_INITIALIZER;
++static int ready[2];
++static void weighted_ready(int slot) {
++    pthread_mutex_lock(&handoff_mutex);
++    ready[slot] = 1;
++    pthread_cond_broadcast(&handoff_cond);
++    pthread_mutex_unlock(&handoff_mutex);
++}
+ 
+ struct query query;
+ int plot_phase;
+@@ -152,6 +165,7 @@
+ 	pthread_attr_t attr;
+ 
+ 	init(argc, argv);
++	if (weights_mode) weights_begin(1, max_hashentries);
+ 
+ 	argc -= optind;
+ 	argv += optind;
+@@ -214,10 +228,13 @@
+ 	sleep(1); /* give the aggregator a chance to catch up */
+ 	
+ 	/* let the aggregator process remaining data if any */
++	final_epoch = epoch;
+ 	exiting = 1;
+ 	pthread_mutex_unlock(&resp_mutex[epoch & 1]);
++	if (weights_mode) weighted_ready(epoch & 1);
+ 
+ 	pthread_join(aggregator_thread, NULL);
++	if (weights_mode) weights_finish();
+ 	
+ 	finish();
+ 
+@@ -283,8 +300,10 @@
+ 	int ch;
+ 	char *cp;
+ 
+-	while ((ch = getopt(argc, argv, "c:df:hi:m:p:r:s:t:vw:DE:H:I:P:S:T:")) != -1) {
++	while ((ch = getopt(argc, argv, "Wc:df:hi:m:p:r:s:t:vw:DE:H:I:P:S:T:")) != -1) {
++		weights_option(ch, optarg, 1);
+ 		switch (ch) {
++		case 'W': weights_mode = 1; break;
+ 		case 'c':
+ 			query.count = strtol(optarg, NULL, 10);
+ 			break;
+@@ -305,7 +324,11 @@
+ 				query.output_interval = 0;
+ 			break;
+ 		case 'm':
+-			if (!strncmp(optarg, "byte", 4))
++			if (!strcmp(optarg, "flow"))
++				query.criteria = FLOW;
++			else if (!strcmp(optarg, "combination"))
++				query.criteria = COMBINATION;
++			else if (!strncmp(optarg, "byte", 4))
+ 				query.criteria = BYTE;
+ 			else if (!strncmp(optarg, "packet", 6))
+ 				query.criteria = PACKET;
+@@ -357,6 +380,7 @@
+ 		}
+ 	}
+ 
++	weights_validate(argc, optind, 1);
+ 	if (wfile == NULL || !strcmp(wfile, "-"))
+ 		wfp = stdout;
+ 	else if ((wfp = fopen(wfile, "w")) == NULL)
+@@ -372,7 +396,13 @@
+ 	if ((rval = pthread_mutex_unlock(&resp_mutex[epoch & 1])) != 0)
+ 		err(1, "mutex_lock returned %d", rval);
+ 	
++	if (weights_mode) weighted_ready(epoch & 1);
+ 	epoch++;
++	if (weights_mode) {
++		pthread_mutex_lock(&handoff_mutex);
++		while (ready[epoch & 1]) pthread_cond_wait(&handoff_cond, &handoff_mutex);
++		pthread_mutex_unlock(&handoff_mutex);
++	}
+ 	cur_resp = responses[epoch & 1];
+ 
+ 	/* lock the other response */
+@@ -394,6 +424,7 @@
+ 	prev->end_time     = resp->end_time;
+ 	prev->total_byte   = resp->total_byte;
+ 	prev->total_packet = resp->total_packet;
++	prev->total_flow = resp->total_flow;
+ 
+ 	/* move all odflows from the response to the results */
+ 	odfq_moveall(&resp->odfq, &prev->odfq);
+@@ -426,6 +457,7 @@
+ 	resp->start_time    = prev->start_time;
+ 	resp->total_byte   += prev->total_byte;
+ 	resp->total_packet += prev->total_packet;
++	resp->total_flow += prev->total_flow;
+ 
+ 	/* move all the odflows from the saved results to the
+ 	 * corresponding hash in the response.
+@@ -445,6 +477,7 @@
+ 		odfh->tbl[0].nrecord++;
+ 		odfh->byte   += odfp->byte;
+ 		odfh->packet += odfp->packet;
++		odfh->flow += odfp->flow;
+ 	}
+ 
+ 	prev->start_time = 0;
+@@ -467,6 +500,11 @@
+ 	while (1) {
+ 		int need_output = 0;
+ 
++		if (weights_mode) {
++			pthread_mutex_lock(&handoff_mutex);
++			while (!ready[my_epoch & 1]) pthread_cond_wait(&handoff_cond, &handoff_mutex);
++			pthread_mutex_unlock(&handoff_mutex);
++		}
+ 		if ((rval = pthread_mutex_lock(&resp_mutex[my_epoch & 1])) != 0)
+ 			err(1, "mutex_lock returned %d", rval);
+ 
+@@ -494,9 +532,15 @@
+ 		if ((rval = pthread_mutex_unlock(&resp_mutex[my_epoch & 1])) != 0)
+ 			err(1, "mutex_unlock returned %d", rval);
+ 
++		if (weights_mode) {
++			pthread_mutex_lock(&handoff_mutex);
++			ready[my_epoch & 1] = 0;
++			pthread_cond_broadcast(&handoff_cond);
++			pthread_mutex_unlock(&handoff_mutex);
++		}
+ 		my_epoch++;
+ 
+-		if (exiting)
++		if (exiting && (!weights_mode || my_epoch > final_epoch))
+ 			break;
+ 		/*
+ 		 * when writing to a file, SIGHUP is used to
+@@ -605,6 +649,10 @@
+ 	uint64_t byte, packet;
+ 	int af = AF_INET, len = 0;
+ 
++	if (weights_mode && (agf->agflow_fs.fs_ipver != 4 ||
++	    (agf->agflow_fs.fs_prot != 6 && agf->agflow_fs.fs_prot != 17) ||
++	    !ntohl(agf->agflow_packets) || !ntohl(agf->agflow_bytes)))
++		errx(1, "weights: invalid canonical IPv4 TCP/UDP record");
+ 	byte   = ntohl(agf->agflow_bytes);
+ 	packet = ntohl(agf->agflow_packets);
+ 
+@@ -624,7 +672,7 @@
+ 	memcpy(&odfsp.dst, agf->agflow_fs.fs_dstaddr, len / 8);
+ 	odfsp.srclen = len;
+ 	odfsp.dstlen = len;
+-	odfp = odflow_addcount(&odfsp, af, byte, packet, 0, cur_resp);
++	odfp = odflow_addcount(&odfsp, af, byte, packet, weights_mode ? 1 : 0, cur_resp);
+ 
+ 	odpsp.src[0] = agf->agflow_fs.fs_prot;
+ 	odpsp.dst[0] = agf->agflow_fs.fs_prot;
+@@ -632,7 +680,7 @@
+ 	memcpy(&odpsp.dst[1], &agf->agflow_fs.fs_dport, 2);
+ 	odpsp.srclen = 24;
+ 	odpsp.dstlen = 24;
+-	odproto_addcount(odfp, &odpsp, AF_LOCAL, byte, packet, 0);
++	odproto_addcount(odfp, &odpsp, AF_LOCAL, byte, packet, weights_mode ? 1 : 0);
+ 
+ 	return (1);
+ }
+@@ -645,7 +693,10 @@
+ 	unsigned long n = 0;
+ 
+ 	while (1) {
+-		if (fread(&agflow, sizeof(agflow), 1, fp) != 1) {
++		size_t count = fread(&agflow, 1, sizeof(agflow), fp);
++		if (weights_mode && (count && count != sizeof(agflow))) errx(1, "weights: truncated canonical record");
++		if (weights_mode && ferror(fp)) err(1, "canonical read");
++		if (count != sizeof(agflow)) {
+ 			if (feof(fp)) {
+ 				if (debug)
+ 					fprintf(stderr, "\n read %lu flows\n", n);
+--- a/src/agurim.c
++++ b/src/agurim.c
+@@ -131,6 +131,13 @@
+ 	char **files;
+ 
+ 	init(argc, argv);
++	if (weights_mode) {
++		weights_read(stdin, response);
++		if (hhh_run(response) > 0) make_output(response);
++		weights_finish();
++		finish();
++		return 0;
++	}
+ 	if (query.criteria == FLOW) {
+ 		if (read_flow(stdin) < 0)
+ 			err(1, "canonical flow input failed");
+@@ -273,10 +280,12 @@
+ 	int ch;
+ 	const char *wfile = NULL;
+ 
+-	while ((ch = getopt(argc, argv, "df:hi:m:n:ps:t:vw:DE:FPS:")) != -1) {
++	while ((ch = getopt(argc, argv, "Wdf:hi:m:n:ps:t:vw:DE:FPS:")) != -1) {
++		weights_option(ch, optarg, 2);
+ 		if (strchr("dfipsvwEPSP", ch) != NULL)
+ 			flow_forbidden_options = 1;
+ 		switch (ch) {
++		case 'W': weights_mode = 1; break;
+ 		case 'd':	/* Set the output format = txt */
+ 			query.outfmt = DEBUG;
+ 			query.criteria = BYTE;
+@@ -294,7 +303,9 @@
+ 			if (!strcmp(optarg, "flow")) {
+ 				query.criteria = FLOW;
+ 				flow_requested = 1;
+-			} else if (!strncmp(optarg, "byte", 4))
++			} else if (!strcmp(optarg, "combination"))
++				query.criteria = COMBINATION;
++			else if (!strncmp(optarg, "byte", 4))
+ 				query.criteria = BYTE;
+ 			else if (!strncmp(optarg, "packet", 6))
+ 				query.criteria = PACKET;
+@@ -346,7 +357,8 @@
+ 		}
+ 	}
+ 
+-	if (flow_requested) {
++	weights_validate(argc, optind, 2);
++	if (flow_requested && !weights_mode) {
+ 		if (!flow_mode || query.criteria != FLOW || flow_forbidden_options || optind != argc ||
+ 		    disable_heuristics > 2 || (flow_n_arg && strcmp(flow_n_arg, "0")) ||
+ 		    (flow_threshold_arg && (strspn(flow_threshold_arg, "0123456789") != strlen(flow_threshold_arg) ||
+@@ -462,6 +474,7 @@
+ 	buf = malloc(bufsz);
+ 
+ 	while (fgets(buf, bufsz, fp)) {
++		if (!strncmp(buf, "AGWGT001", 8)) errx(1, "weighted format requires -W");
+ 		if (is_preambles(buf))
+ 			continue;
+ 		if (is_finish)	/* the duration is expired */
+--- a/src/agurim.h
++++ b/src/agurim.h
+@@ -214,3 +214,16 @@
+ int check_flowtime(const struct aguri_flow *agf);
+ int do_agflow(const struct aguri_flow *agf);
+ 
++
++/* Versioned canonical two-stage transport. Legacy paths remain opt-in free. */
++extern int weights_mode;
++void weights_option(int ch, const char *arg, int stage);
++void weights_validate(int argc, int used, int stage);
++void weights_begin(int stage, unsigned int hash_limit);
++void weights_block(struct response *resp);
++void weights_finish(void);
++void weights_read(FILE *input, struct response *resp);
++uint64_t weights_add(uint64_t a, uint64_t b);
++uint64_t weights_sub(uint64_t a, uint64_t b);
++uint64_t weights_threshold(uint64_t total, int percentage);
++void odproto_countsort(struct odflow *odfp);
+--- a/src/agurim_plot.c
++++ b/src/agurim_plot.c
+@@ -45,7 +45,7 @@
+ static int calc_interval(int duration);
+ static struct odflow *odfq_parentlookup(struct odf_tailq *odfq, struct odflow *odfp);
+ static void odfq_insert(struct odf_tailq *odfq, struct odflow *odfp, enum aggr_criteria criteria);
+-static void odproto_countsort(struct odflow *odfp);
++void odproto_countsort(struct odflow *odfp);
+ static int area_comp(const void *p0, const void *p1);
+ static int count_comp(const void *p0, const void *p1);
+ static void aguri_preamble_print(struct response *resp);
+@@ -176,6 +176,7 @@
+ 
+ 	switch (query.outfmt) {
+ 	case REAGGREGATION:
++		if (weights_mode) { weights_block(resp); break; }
+ 		aguri_preamble_print(resp);
+ 		aguri_odflow_print(resp);
+ 		break;
+@@ -455,6 +456,8 @@
+ 	odfp1 = *(struct odflow **)p1;
+ 
+ 	switch (query.criteria) {
++	case FLOW:
++		return (odfp0->flow > odfp1->flow) - (odfp0->flow < odfp1->flow);
+ 	case BYTE:
+ 		if (odfp0->byte < odfp1->byte)
+ 			return (-1);
+@@ -524,7 +527,7 @@
+ }
+ 
+ /* sort the lower odflows (odprotos) by count */
+-static void
++void
+ odproto_countsort(struct odflow *odfp)
+ {
+ 	struct odflow **odproto_list;
+--- a/src/hhh.c
++++ b/src/hhh.c
+@@ -171,9 +171,9 @@
+ 
+ 		/* insert the new odflow to a temporal hash */
+ 		odfp = odflow_lookup(odfh, &odfsp);
+-		odfp->byte += _odfp->byte;
+-		odfp->packet += _odfp->packet;
+-		odfp->flow += _odfp->flow;
++		odfp->byte = weights_add(odfp->byte, _odfp->byte);
++		odfp->packet = weights_add(odfp->packet, _odfp->packet);
++		odfp->flow = weights_add(odfp->flow, _odfp->flow);
+ 		odfp->af = _odfp->af;
+ 
+ 		/* save this index in the cache list for sub-attr aggregation */
+@@ -214,9 +214,9 @@
+ #endif
+ 
+ 			/* book keeping extracted packets/bytes */
+-			parent->packet -= odfp->packet;
+-			parent->flow -= odfp->flow;
+-			parent->byte   -= odfp->byte;
++			parent->packet = weights_sub(parent->packet, odfp->packet);
++			parent->flow = weights_sub(parent->flow, odfp->flow);
++			parent->byte = weights_sub(parent->byte, odfp->byte);
+ 
+ 			/* add this entry to the tail of the queue */
+ 			TAILQ_INSERT_TAIL(&params->odfqp->odfq_head, odfp, odf_chain);
+@@ -404,9 +404,9 @@
+ 					nflows += n;
+ 					if (n > 0 && do_aggregate) {
+ 						/* propagate extracted pkts/bytes to parent */
+-						parent->packet -= packet - odfp->packet;
+-						parent->flow -= flow - odfp->flow;
+-						parent->byte -= byte - odfp->byte;
++						parent->packet = weights_sub(parent->packet, packet - odfp->packet);
++						parent->flow = weights_sub(parent->flow, flow - odfp->flow);
++						parent->byte = weights_sub(parent->byte, byte - odfp->byte);
+ 					}
+ 				}
+ 				if (!do_aggregate) /* XXX for dummy_hash */
+@@ -511,9 +511,9 @@
+ 			
+ 					params.flow_list[n] = odfp;
+ 					cl_append(root->odf_cache, n);
+-					root->packet += odfp->packet;
+-					root->flow += odfp->flow;
+-					root->byte   += odfp->byte;
++					root->packet = weights_add(root->packet, odfp->packet);
++					root->flow = weights_add(root->flow, odfp->flow);
++					root->byte = weights_add(root->byte, odfp->byte);
+ 					n++;
+ 				}
+ 			}
+@@ -540,9 +540,9 @@
+ 
+ 				params.flow_list[n] = odfp;
+ 				cl_append(root->odf_cache, n);
+-				root->packet += odfp->packet;
+-					root->flow += odfp->flow;
+-				root->byte   += odfp->byte;
++				root->packet = weights_add(root->packet, odfp->packet);
++					root->flow = weights_add(root->flow, odfp->flow);
++				root->byte = weights_add(root->byte, odfp->byte);
+ 				n++;
+ 			}
+ 			odfp = next;
+@@ -624,15 +624,15 @@
+ 	if (proto_view == 0) {
+ 		/* calculate total bytes/packets and thresholds */
+ 		resp->total_flow = resp->ip_hash->flow + resp->ip6_hash->flow;
+-		resp->thresh_flow = (resp->total_flow * query.threshold + 99) / 100;
++		resp->thresh_flow = weights_threshold(resp->total_flow, query.threshold);
+ 		resp->total_byte = resp->ip_hash->byte + resp->ip6_hash->byte;
+ 		if (query.criteria == FLOW ? resp->total_flow == 0 : resp->total_byte == 0)
+ 			return (0);  /* nothing to aggregate */
+ 		resp->thresh_byte =
+-		    (resp->total_byte * query.threshold + 99) / 100;
++		    weights_threshold(resp->total_byte, query.threshold);
+ 		resp->total_packet = resp->ip_hash->packet + resp->ip6_hash->packet;
+ 		resp->thresh_packet =
+-		    (resp->total_packet * query.threshold + 99) / 100;
++		    weights_threshold(resp->total_packet, query.threshold);
+ 		resp->input_odflows  = resp->ip_hash->nrecord;
+ 		resp->input_odflows6 = resp->ip6_hash->nrecord;
+ 		
+@@ -648,10 +648,10 @@
+ 		if (query.criteria == FLOW ? resp->total_flow == 0 : resp->total_byte == 0)
+ 			return (0);  /* nothing to aggregate */
+ 		resp->thresh_byte =
+-		    (resp->total_byte * query.threshold + 99) / 100;
++		    weights_threshold(resp->total_byte, query.threshold);
+ 		resp->total_packet = resp->proto_hash->packet;
+ 		resp->thresh_packet =
+-		    (resp->total_packet * query.threshold + 99) / 100;
++		    weights_threshold(resp->total_packet, query.threshold);
+ 
+ 		resp->nflows = find_hhh(resp->proto_hash, 24, resp->thresh_byte,
+ 				    resp->thresh_packet, resp->thresh_flow, resp, &resp->odfq);
+@@ -672,9 +672,9 @@
+         TAILQ_FOREACH(odfp, &resp->odfq.odfq_head, odf_chain) {
+ 		/* calculate threshold */
+ 		uint64_t thresh, thresh2, thresh_flow;
+-		thresh_flow = (odfp->flow * query.threshold + 99) / 100;
+-		thresh  = (odfp->byte   * query.threshold + 99) / 100;
+-		thresh2 = (odfp->packet * query.threshold + 99) / 100;
++		thresh_flow = weights_threshold(odfp->flow, query.threshold);
++		thresh  = weights_threshold(odfp->byte  , query.threshold);
++		thresh2 = weights_threshold(odfp->packet, query.threshold);
+ 		if (disable_heuristics < 2) {
+ 			/* increase the threshold for sub-attributes */
+ 			thresh *= 4;
+--- a/src/odflow.c
++++ b/src/odflow.c
+@@ -203,14 +203,14 @@
+ 	odfp->af = af;	/* set address family */
+ 
+ 	/* update count in the hash */
+-	odfh->byte += byte;
+-	odfh->packet += packet;
+-	odfh->flow += flow;
++	odfh->byte = weights_add(odfh->byte, byte);
++	odfh->packet = weights_add(odfh->packet, packet);
++	odfh->flow = weights_add(odfh->flow, flow);
+ 
+ 	/* update count in this record */
+-	odfp->byte += byte;
+-	odfp->packet += packet;
+-	odfp->flow += flow;
++	odfp->byte = weights_add(odfp->byte, byte);
++	odfp->packet = weights_add(odfp->packet, packet);
++	odfp->flow = weights_add(odfp->flow, flow);
+ 
+ 	return (odfp);
+ }
+@@ -223,9 +223,9 @@
+ 	struct odflow *odpp;
+ 
+ 	odpp = odproto_lookup(odfp, odpsp, af);
+-	odpp->byte += byte;
+-	odpp->packet += packet;
+-	odpp->flow += flow;
++	odpp->byte = weights_add(odpp->byte, byte);
++	odpp->packet = weights_add(odpp->packet, packet);
++	odpp->flow = weights_add(odpp->flow, flow);
+ }
+ 
+ struct odflow *
+@@ -387,11 +387,11 @@
+ 	
+ 	/* select the best wildcard */
+ 	idx = 0;
+-	if ((query.criteria == FLOW ? wildcard[0]->flow : wildcard[0]->packet) <
+-	    (query.criteria == FLOW ? wildcard[1]->flow : wildcard[1]->packet))
++	if (wildcard[0]->packet <
++	    wildcard[1]->packet)
+ 		idx = 1;
+-	if ((query.criteria == FLOW ? wildcard[idx]->flow : wildcard[idx]->packet) <
+-	    (query.criteria == FLOW ? wildcard[2]->flow : wildcard[2]->packet) / 2)
++	if (wildcard[idx]->packet <
++	    wildcard[2]->packet / 2)
+ 		idx = 2;  /* use proto:*:* if either port is not a majority */
+ 
+ 	/* remove the merged entries */
+--- a/src/weights.c
++++ b/src/weights.c
+@@ -0,0 +1,142 @@
++/* Copyright (C) 2026. BSD-2-Clause, under the accompanying upstream LICENSE.
++ * Versioned residual transport, not a replacement for recursive lattice search.
++ */
++#include <sys/socket.h>
++#include <arpa/inet.h>
++#include <stdint.h>
++#include <inttypes.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <limits.h>
++#include <err.h>
++#include "agurim.h"
++
++int weights_mode;
++static int forbidden, m_count, t_count, h_count, n_count, w_count, flag_count;
++static const char *mode_arg, *thresh_arg, *hash_arg, *n_arg;
++static unsigned int output_stage, output_hash;
++static uint64_t blocks, total[3];
++static const char magic[8] = "AGWGT001";
++
++uint64_t weights_add(uint64_t a, uint64_t b) {
++    if (weights_mode && UINT64_MAX-a < b) errx(1,"weights: counter overflow");
++    return a+b;
++}
++uint64_t weights_sub(uint64_t a, uint64_t b) {
++    if (weights_mode && a < b) errx(1,"weights: counter underflow");
++    return a-b;
++}
++uint64_t weights_threshold(uint64_t a, int t) {
++    if (weights_mode && (t<1 || (UINT64_MAX-99)/(unsigned)t<a)) errx(1,"weights: threshold overflow");
++    uint64_t n=(a*t+99)/100;
++    if (weights_mode && disable_heuristics<2 && n>UINT64_MAX/4) errx(1,"weights: subattribute threshold overflow");
++    return n;
++}
++static uint64_t integer(const char *s,uint64_t min,uint64_t max) {
++    uint64_t n=0;
++    if (!s || !*s) errx(1,"weights: missing integer");
++    while (*s) { if (*s<'0'||*s>'9'||n>(max-(*s-'0'))/10) errx(1,"weights: invalid integer"); n=n*10+(*s++-'0'); }
++    if (n<min || n>max) errx(1,"weights: integer out of range");
++    return n;
++}
++void weights_option(int ch,const char *arg,int stage) {
++    if (!strchr(stage==1 ? "WmtDwH" : "WmtDwn",ch)) forbidden=1;
++    if(ch=='W')flag_count++;
++    if(ch=='m'){m_count++;mode_arg=arg;}
++    if(ch=='t'){t_count++;thresh_arg=arg;}
++    if(ch=='H'){h_count++;hash_arg=arg;}
++    if(ch=='n'){n_count++;n_arg=arg;}
++    if(ch=='w')w_count++;
++}
++void weights_validate(int argc,int used,int stage) {
++    if(!weights_mode)return;
++    if(forbidden || used!=argc || flag_count!=1 || m_count>1 || t_count>1 || h_count>1 || n_count>1 || w_count>1 || disable_heuristics>2)
++        errx(1,"weights: unsupported/duplicate options (both stages require the same mode, integer threshold, heuristics; no time aggregation/filter/top-k)");
++    if(mode_arg && strcmp(mode_arg,"packet") && strcmp(mode_arg,"byte") && strcmp(mode_arg,"flow") && strcmp(mode_arg,"combination"))errx(1,"weights: invalid basis");
++    if(thresh_arg)integer(thresh_arg,1,100);
++    if(hash_arg)integer(hash_arg,1,INT_MAX);
++    if(n_arg)integer(n_arg,0,0);
++    (void)stage;
++}
++static void put(const void *p,size_t n){if(fwrite(p,1,n,wfp)!=n)err(1,"weights write");}
++static void get(FILE *f,void *p,size_t n){if(fread(p,1,n,f)!=n)errx(1,"weights: truncated stream");}
++static void put32(uint32_t n){n=htonl(n);put(&n,4);}
++static uint32_t get32(FILE *f){uint32_t n;get(f,&n,4);return ntohl(n);}
++static void put64(uint64_t n){put32((uint32_t)(n>>32));put32((uint32_t)n);}
++static uint64_t get64(FILE *f){uint64_t hi=get32(f);return (hi<<32)|get32(f);}
++static void tag(FILE *f,const char *s){char v[4];get(f,v,4);if(memcmp(v,s,4))errx(1,"weights: invalid frame");}
++static void counts(const struct odflow *p,uint64_t v[3]){v[0]=p->packet;v[1]=p->byte;v[2]=p->flow;}
++static void putcounts(const uint64_t v[3]){for(int i=0;i<3;i++)put64(v[i]);}
++static void getcounts(FILE *f,uint64_t v[3]){for(int i=0;i<3;i++)v[i]=get64(f);}
++static void accumulate(uint64_t a[3],const uint64_t b[3]){for(int i=0;i<3;i++)a[i]=weights_add(a[i],b[i]);}
++static void same(const uint64_t a[3],const uint64_t b[3]){for(int i=0;i<3;i++)if(a[i]!=b[i])errx(1,"weights: counter conservation mismatch");}
++static void specput(const struct odflow_spec *s){put(s->src,16);put(s->dst,16);put(&s->srclen,1);put(&s->dstlen,1);}
++static void specget(FILE *f,struct odflow_spec *s,int bits){
++    memset(s,0,sizeof(*s));get(f,s->src,16);get(f,s->dst,16);get(f,&s->srclen,1);get(f,&s->dstlen,1);
++    if(s->srclen>bits || s->dstlen>bits)errx(1,"weights: invalid prefix length");
++    uint8_t src[16]={0},dst[16]={0};prefix_set(s->src,s->srclen,src,bits/8);prefix_set(s->dst,s->dstlen,dst,bits/8);
++    if(memcmp(src,s->src,16)||memcmp(dst,s->dst,16))errx(1,"weights: noncanonical prefix bits");
++}
++void weights_begin(int stage,unsigned int hash_limit){
++    output_stage=stage;output_hash=hash_limit;blocks=0;memset(total,0,sizeof(total));
++    put(magic,8);put32(query.criteria);put32(query.threshold);put32(disable_heuristics);put32(stage);put32(hash_limit);put32(0);
++}
++/* Preserve old address and protocol order and old no-label wildcard fallback.
++ * Missing protocol mass is an accounting field, never an extra odproto entry.
++ */
++void weights_block(struct response *resp){
++    struct odflow *p,*q;uint64_t naddr=0,nproto=0,expected[3]={resp->total_packet,resp->total_byte,resp->total_flow},sum[3]={0};
++    TAILQ_FOREACH(p,&resp->odfq.odfq_head,odf_chain){
++        uint64_t n=0;odproto_countsort(p);
++        TAILQ_FOREACH(q,&p->odf_odpq.odfq_head,odf_chain)if(q->s.srclen||q->s.dstlen)n++;
++        naddr++;nproto+=n?n:1;
++    }
++    put("BLK1",4);put64(blocks++);put64(resp->start_time);put64(resp->end_time);putcounts(expected);put64(naddr);put64(nproto);
++    TAILQ_FOREACH(p,&resp->odfq.odfq_head,odf_chain){
++        uint64_t v[3],lower[3]={0},deficit[3],n=0;
++        counts(p,v);accumulate(sum,v);
++        TAILQ_FOREACH(q,&p->odf_odpq.odfq_head,odf_chain)if(q->s.srclen||q->s.dstlen){uint64_t x[3];counts(q,x);accumulate(lower,x);n++;}
++        if(!n)memcpy(lower,v,sizeof(lower));
++        for(int i=0;i<3;i++)deficit[i]=weights_sub(v[i],lower[i]);
++        specput(&p->s);putcounts(v);put32(n?n:1);putcounts(deficit);
++        if(!n){struct odflow_spec zero;memset(&zero,0,sizeof(zero));specput(&zero);putcounts(v);}
++        else TAILQ_FOREACH(q,&p->odf_odpq.odfq_head,odf_chain)if(q->s.srclen||q->s.dstlen){uint64_t x[3];counts(q,x);specput(&q->s);putcounts(x);}
++    }
++    same(sum,expected);accumulate(total,sum);put("SUM1",4);putcounts(sum);put64(naddr);put64(nproto);
++    if(fflush(wfp))err(1,"weights flush");
++}
++void weights_finish(void){put("END1",4);put64(blocks);putcounts(total);if(fflush(wfp))err(1,"weights flush");}
++void weights_read(FILE *f,struct response *resp){
++    char m[8];get(f,m,8);if(memcmp(m,magic,8))errx(1,"weights: unsupported magic/version (legacy AGR is not weighted input)");
++    unsigned basis=get32(f),t=get32(f),h=get32(f),stage=get32(f),limit=get32(f),reserved=get32(f);
++    if(basis!=query.criteria||t!=query.threshold||h!=(unsigned)disable_heuristics||stage!=1||!limit||limit>INT_MAX||reserved)errx(1,"weights: stage/basis/settings mismatch");
++    weights_begin(2,limit);
++    uint64_t seq=0,totals[3]={0};
++    for(;;){
++        char frame[4];get(f,frame,4);
++        if(!memcmp(frame,"END1",4)){
++            uint64_t n=get64(f),v[3];getcounts(f,v);if(n!=seq)errx(1,"weights: block sequence mismatch");same(v,totals);
++            if(fgetc(f)!=EOF || ferror(f))errx(1,"weights: trailing bytes or input error");break;
++        }
++        if(memcmp(frame,"BLK1",4)||get64(f)!=seq++)errx(1,"weights: invalid block sequence");
++        uint64_t start=get64(f),end=get64(f),expected[3],sum[3]={0},na,np,actual_np=0;getcounts(f,expected);na=get64(f);np=get64(f);
++        if(end<start || start>UINT32_MAX || end>UINT32_MAX)errx(1,"weights: invalid timestamps");
++        if(seq==1||start<(uint64_t)resp->start_time)resp->start_time=start;
++        if(end>(uint64_t)resp->end_time)resp->end_time=end;
++        for(uint64_t i=0;i<na;i++){
++            struct odflow_spec s;uint64_t v[3],lower[3]={0},deficit[3];specget(f,&s,32);getcounts(f,v);
++            uint32_t n=get32(f);getcounts(f,deficit);if(!n)errx(1,"weights: missing protocol record/fallback");
++            struct odflow *p=odflow_addcount(&s,AF_INET,v[1],v[0],v[2],resp);accumulate(sum,v);
++            for(uint32_t j=0;j<n;j++){
++                struct odflow_spec sub;uint64_t x[3];specget(f,&sub,24);getcounts(f,x);accumulate(lower,x);
++                odproto_addcount(p,&sub,AF_LOCAL,x[1],x[0],x[2]);actual_np++;
++            }
++            accumulate(lower,deficit);same(lower,v);
++        }
++        if(actual_np!=np)errx(1,"weights: protocol count mismatch");same(sum,expected);accumulate(totals,sum);
++        tag(f,"SUM1");uint64_t trailer[3];getcounts(f,trailer);same(trailer,sum);
++        if(get64(f)!=na||get64(f)!=np)errx(1,"weights: trailer count mismatch");
++    }
++    (void)output_stage;(void)output_hash;
++}
