@@ -52,12 +52,16 @@ def ks_distance(db, left: str, right: str) -> dict:
 def write_ecdf(db, totals: dict[str,int], stream, *, max_points: int = 2000) -> dict:
     """Stream every exact point to CSV; keep only bounded genuine points for HTML.
 
+    A None stream reuses sampling without writing a redundant copy of saved CSVs.
+
     When sampled, HV steps through retained points are a lower bound; the next
     retained cumulative value bounds each interval from above. Width is recorded.
     """
     if type(max_points) is not int or not 2 <= max_points <= 50_000:
         raise ValueError('max_ecdf_points must be an integer in [2,50000]')
-    writer=csv.writer(stream,lineterminator='\n');writer.writerow(ECDF_COLUMNS)
+    writer=csv.writer(stream,lineterminator='\n') if stream is not None else None
+    if writer is not None:
+        writer.writerow(ECDF_COLUMNS)
     curves={}
     for name,total in totals.items():
         count=db.execute('SELECT COUNT(*) FROM frequencies WHERE distribution=?',(name,)).fetchone()[0]
@@ -68,7 +72,8 @@ def write_ecdf(db, totals: dict[str,int], stream, *, max_points: int = 2000) -> 
             if not total:
                 raise ValueError(f'{name}: frequency rows with zero flow_count')
             fraction=ratio(cumulative,total)
-            writer.writerow((name,packets,n,cumulative,total,fraction))
+            if writer is not None:
+                writer.writerow((name,packets,n,cumulative,total,fraction))
             if selected is None or index in selected:
                 points.append(dict(packet_count=str(packets),frequency=str(n),
                     cumulative_count=str(cumulative),cumulative_fraction=fraction))

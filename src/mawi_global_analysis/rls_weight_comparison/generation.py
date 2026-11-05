@@ -17,6 +17,7 @@ from mawi_global_analysis.normalized24 import export_raw_statistics
 from mawi_global_analysis.normalized24.statistics import _new_output
 from .metrics import MODES, BITS, ratio, flow_jaccards, ks_distance, write_ecdf
 from .validation import validate_comparison
+from .prefix_ecdf import SCHEMA as PREFIX_ECDF_SCHEMA, build_prefix_ecdfs
 
 SCHEMA = 'rls-weight-comparison-v1'
 STATS = ('flow_count','packet_total','byte_total','mean_packet_count','median','p95','one_packet_rate')
@@ -66,6 +67,12 @@ def _verify_artifacts(base: Path, entries: dict) -> None:
     if not REQUIRED.issubset(entries):
         raise ValueError(f'comparison artifacts missing: {sorted(REQUIRED-set(entries))}')
     for name,entry in entries.items():
+        # Canonical artifact names only: resolving inside base is insufficient
+        # for aliases such as ../<base-name>/file when copying to another base.
+        relative=Path(name)
+        if (not name or relative.is_absolute() or '..' in relative.parts
+                or name!=relative.as_posix() or '\\' in name):
+            raise ValueError(f'artifacts.{name}: unsafe relative path')
         path=(base/name).resolve()
         if not path.is_relative_to(base.resolve()) or Path(name).is_absolute():
             raise ValueError(f'artifacts.{name}: unsafe relative path')
@@ -252,10 +259,11 @@ def generate_comparison(root: Path, dataset_id: str, *, packet_run: str, byte_ru
             'flow_coverage','packet_coverage','byte_coverage','ks_distance','ks_numerator','ks_denominator'),selection)
         _write_csv(work/CSV_NAMES[3],('mode_a','mode_b','set_kind','intersection_count','union_count','jaccard'),jaccard)
         _write_csv(work/CSV_NAMES[4],('mode','prefix_24','native_prefixes',*STATS),prefix_stats)
+        per_prefix_ecdf=build_prefix_ecdfs(work,prefixes,scratch_dir=scratch_dir)
         from .dashboard import render_dashboard
         repo=Path(__file__).resolve().parents[3]
         implementation={'sha256':{name:sha256_file(Path(__file__).with_name(name)) for name in
-            ('generation.py','metrics.py','validation.py','cli.py','dashboard.py','dashboard.html')}}
+            ('generation.py','metrics.py','validation.py','cli.py','dashboard.py','dashboard.html','prefix_ecdf.py','refresh.py')}}
         git=subprocess.run(['git','-C',str(repo),'rev-parse','HEAD'],capture_output=True,text=True,check=False)
         implementation['git_commit']=git.stdout.strip() if git.returncode==0 else None
         display={'max_ecdf_points':max_ecdf_points,'sampling':'uniform observed-size rank; retained exact points',
@@ -264,13 +272,14 @@ def generate_comparison(root: Path, dataset_id: str, *, packet_run: str, byte_ru
             'null_rules':'zero denominator: null; both-empty Jaccard: null; empty KS: null',
             'csv_null_encoding':'empty cells represent JSON null; integer numerators/counts remain exact',
             'browser_integer_encoding':'integers beyond 2**53-1 are decimal strings; research JSON/CSV preserve integers',
+            'per_prefix_ecdf':{k:v for k,v in per_prefix_ecdf.items() if k!='curves'},
             'self_hash':'dashboard.html hash is in comparison_manifest.json; HTML cannot embed its own hash'}
         payload=dict(schema_version='rls-weight-comparison-dashboard-v1',dataset_id=dataset_id,
             evidence='Saved-run descriptive comparison; synthetic fixtures are not real MAWI findings.',
             conditions=validation['common'],runs=validation['runs'],modes=modes,overall={'stats':overall},
-            jaccard=jaccard,prefixes=prefixes,ecdf=curves,
+            jaccard=jaccard,prefixes=prefixes,ecdf=curves,per_prefix_ecdf=per_prefix_ecdf,
             provenance={'validation':validation,'inputs':{m:data[m]['provenance']['inputs'] for m in MODES},
-                'schemas':{'comparison':SCHEMA,'dashboard':'rls-weight-comparison-dashboard-v1',
+                'schemas':{'comparison':SCHEMA,'per_prefix_ecdf':PREFIX_ECDF_SCHEMA,'dashboard':'rls-weight-comparison-dashboard-v1',
                     'modes':{m:{'payload_schema_version':data[m]['schema_version'],
                         'aggregation_version':data[m]['provenance']['aggregation']['version'],
                         'export_schema_version':data[m]['export_schema_version'],

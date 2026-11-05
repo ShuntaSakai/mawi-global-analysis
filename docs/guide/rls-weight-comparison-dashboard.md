@@ -63,7 +63,8 @@ verified = verify_comparison_manifest(manifest)  # hash/schema/行数の読み�
    同じ/24は1行にまとめ、mode一覧とnative prefix対応を示す。正確なcanonical統計を共有し、
    HHH残余を実populationとして使わない。散布図はflow_count対mean_packet_countの対数軸。
    複数modeは分割円で示し、ホバーで統計、クリックで該当/24へ絞り込める。
-4. **Experiment Details**：入力・run・manifest・RLS binary/変換条件・hash・比較検証結果、
+4. **Per-Prefix Flow Size Distribution**：最大5つの/24を検索・選択し、個別ECDFと正確な統計を確認する。詳細は下記。
+5. **Experiment Details**：入力・run・manifest・RLS binary/変換条件・hash・比較検証結果、
    集計/CSV/export schemaと実装identity、出力hash、指標定義と注意点。
 
 統計やJaccardの表示は読みやすく丸めるが、セルのtitle/元CSVには元値が残る。
@@ -151,3 +152,65 @@ node scripts/test_rls_weight_dashboard_browser.js /absolute/path/to/dashboard.ht
 ブラウザツールがfile://を許可しない環境では一時localhostで読み込み、その後offlineにして
 操作を確認できる。通常のローカル閲覧にサーバーは不要。ランダム抽出・層化・scan除去・
 複数日比較・実MAWI本実験は今回の範囲外。
+
+## 個別normalized /24 ECDF（追加機能）
+
+**Per-Prefix Flow Size Distribution**でpacket / byte / flowを切り替え、/24を検索して
+チェックする。個別/24は最大5件、Overallと現在モードのselected_unionは別途ON/OFFできる
+（参照を含め最大7曲線）。検索結果は20件ずつページ表示する。検索で隠れた選択は維持し、
+上部の「/24 ×」またはチェックで解除する。「選択をすべて解除」で全解除、モード変更でも
+全解除する。個別統計表はflow_count、packet_total、byte_total、median、p95、
+mean_packet_count、one_packet_rateを保存済み統計から表示する。対数横軸、ホバー、
+ボタン/ホイール/ドラッグによる拡大縮小、リセット、SVG保存を利用できる。
+
+各/24はsrc OR dstのflow_id一意集合。両端が同一/24でも1回、別/24には同じフローが
+所属し得る。曲線は独立に重ね、混合・平均しない。selected_unionはモードの全選定/24を
+通じて重複排除した別の集合である。
+
+### 保存済み比較出力だけからHTMLを再生成する
+
+既存の比較出力にこの画面を追加するには、canonical/run入力を指定せずに次を使う。
+PCAP解析・RLS・段階2集計・membership再構築を一切実行しない。
+
+```sh
+cd /Users/shunta/mawi-global-analysis
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m mawi_global_analysis.rls_weight_comparison \
+  --from-comparison /absolute/path/old-comparison/comparison_manifest.json \
+  --output-dir /absolute/path/new-comparison \
+  --scratch-dir /private/tmp
+```
+
+Pythonでは`refresh_dashboard(manifest_path, output_dir, *, scratch_dir=None)`を使う。
+元比較bundleは読み取り専用。新しいbundleへ研究CSV/統計JSONをバイト単位でそのままコピーし、
+HTMLとmanifestを新規生成する。入力・成果物hashを前後に照合し、コピー全体のhash照合後にそのコピーだけから表示を作る。manifestを最後に公開する。
+新manifestの`dashboard_refresh`に元manifestのSHA-256、path、表示実装のhashを追加し、
+元の比較条件・研究provenanceを維持する。出力先は記録された分析rootと現在のリポジトリのdata/results/notebooks/sourcesを禁止し、
+元bundle内への出力・scratch作成も禁止する。元runやbinaryが手元になくても、保存済み比較bundle
+の完全性を検証して再生成できる。`--validate-only`およびrun指定との併用は不可。
+`--chunksize`/`--max-ecdf-points`は従来のrunからの生成用で、保存済み比較の再生成には影響しない。
+既存4曲線の表示点・研究出力・比較条件は変更しない。
+
+### データ量と正確性
+
+- `modes/<mode>/frequencies.csv`の個別/24の整数度数を一時SQLiteへ読み込み、各/24について
+  度数和=flow_count、packet_count×度数和=packet_totalを確認する。同一/24が複数modeにある場合、
+  統計全体と全packet_count度数の一致を検証する。ヒストグラムは使わない。
+- 表示専用payloadに`per_prefix_ecdf`（`rls-per-prefix-ecdf-v1`）を追加する。
+  既存研究CSV/JSON schemaと比較manifest v1は維持し、manifestのschemas/表示条件に追記する。
+  曲線は同じ/24につき一度だけ保存する。正確な全度数は元mode CSVに保持する。
+- N個の/24に対し、各曲線の表示上限は`min(200,max(2,200000//max(1,N)))`。
+  全体の表示点数は`max(200000,2*N)`以下。端点2つを優先するため、N>100000では
+  200000点予算を超える。単一HTMLで任意の/24を選択するため、最低限のデータ量はNに比例する。
+- 全点を無条件に埋め込まず、観測値順位に従い先頭・末尾を保持する。縮約時の点間形状は
+  下界の階段・上界の帯で表示し、正確なECDFそのものとは区別する。空分布は点なし、
+  定義不能な値は「—」。非空ECDFの最終値は必ず1。
+- `encoded_points`はJSON配列を符号化した文字列。起動時には全/24の点オブジェクトへ展開せず、
+  選択した最大5件だけ解析し、解除時に破棄する。単一HTML・オフライン要件を満たすため、
+  未選択分も上限付き文字列としてHTMLには保持する。HTMLサイズ/読込時間が完全に一定に
+  なる方式ではなく、prefix数・整数の桁数にも依存する。外部CSVをブラウザからfetchしない。
+- `--max-ecdf-points`は従来4曲線だけに適用する。個別/24は独立した上記予算を用いる。
+  表示用設定と表示点数・元点数・最大帯幅をprovenance/各curveへ記録する。
+
+追加テストは`tests/test_rls_weight_prefix_ecdf.py`。ブラウザ検証用scriptは5画面と
+個別選択・独立曲線・参照切替・欠損・オフライン操作も確認する。合成入力の検証であり、
+実MAWIの研究結果や大規模実験全体の性能を示すものではない。

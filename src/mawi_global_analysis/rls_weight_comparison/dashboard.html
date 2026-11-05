@@ -15,6 +15,7 @@
 <nav role="tablist" aria-label="Comparison sections">
 <button role="tab" id="tab-overview" aria-controls="overview" aria-selected="true">Overview</button>
 <button role="tab" id="tab-distribution" aria-controls="distribution" aria-selected="false" tabindex="-1">Flow Size Distribution</button>
+<button role="tab" id="tab-per-prefix" aria-controls="per-prefix" aria-selected="false" tabindex="-1">Per-Prefix Flow Size Distribution</button>
 <button role="tab" id="tab-prefixes" aria-controls="prefixes" aria-selected="false" tabindex="-1">Prefix Analysis</button>
 <button role="tab" id="tab-details" aria-controls="details" aria-selected="false" tabindex="-1">Experiment Details</button>
 </nav>
@@ -33,6 +34,15 @@
 <div class="chart-frame"><svg id="ecdf-svg" class="chart" viewBox="0 0 1000 460" role="img" aria-label="Log packet count ECDF comparison"></svg></div><p id="ecdf-status" class="caption" role="status"></p><div id="ecdf-reduction"></div></div>
 <div class="panel"><h3>正確な分布統計とKS型距離</h3><div class="table-wrap" id="distribution-stats"></div><p class="caption">KS型距離は各selected_unionとOverallの最大ECDF差です。記述的な分布差であり、検定のp値ではありません。整数の分子/分母を併記します。</p></div>
 <div class="note">ブラウザは保存済みの統計値とcumulative_fractionを表示します。度数の再集計・coverage・KSの再計算は行いません。表示を削減した曲線は下界の階段と次の選択点による上界を示します。帯の内部の正確な段差は不明です。正確な度数はecdf_counts.csvおよびmodes/*/frequencies.csvから再現できます。</div>
+</section>
+<section id="per-prefix" role="tabpanel" aria-labelledby="tab-per-prefix" hidden>
+<h2>Per-Prefix Flow Size Distribution</h2><p class="muted">選定されたnormalized /24を最大5つ選び、個別のECDFを比較します。Overallと現在モードのselected_unionは別の参照曲線です。</p>
+<div class="panel" id="per-prefix-picker"><div class="toolbar"><label>選定モード <select id="pp-mode"><option>packet</option><option>byte</option><option>flow</option></select></label><label>/24検索 <input id="pp-search" type="search" placeholder="192.0.2" autocomplete="off"></label><button id="pp-clear">選択をすべて解除</button><span class="caption">モードを変更すると/24の選択を解除します。</span></div>
+<div id="pp-options" class="toolbar" role="group" aria-label="Individual prefix selection"></div><div class="pagination"><button id="pp-prev">前へ</button><span id="pp-page-status" role="status"></span><button id="pp-next">次へ</button></div><div id="pp-selected" class="toolbar" aria-label="Selected prefixes"></div></div>
+<div class="panel"><div class="toolbar"><label><input id="pp-overall" type="checkbox" checked> Overallを表示</label><label><input id="pp-union" type="checkbox" checked> <span id="pp-union-label">packet selected_union</span>を表示</label><span class="spacer"></span><button id="pp-download">SVGを保存</button></div><div id="pp-legend" class="toolbar"></div><div class="toolbar"><button id="pp-zoom-in">拡大 ＋</button><button id="pp-zoom-out">縮小 −</button><button id="pp-reset">表示範囲をリセット</button><span class="caption">ドラッグで範囲選択 / ホイールで拡大縮小</span></div>
+<div class="chart-frame"><svg id="pp-svg" class="chart" viewBox="0 0 1000 460" role="img" aria-label="Individual prefix log packet count ECDF"></svg></div><p id="pp-status" class="caption" role="status"></p><div id="pp-reduction"></div></div>
+<div class="panel"><h3>選択した/24の正確な分布統計</h3><div class="table-wrap" id="pp-stats"></div></div>
+<div class="note">各/24内ではsrc OR dstに所属するflow_idを一意化しています。異なる/24には同じフローが所属し得ます。個別ECDFを混合・平均した図ではなく、それぞれの分布を独立に描きます。selected_unionは選定集合全体でflow_idを一意化した別の分布です。表示点を削減した場合、選択点は真値、中間の階段は下界、帯は上界です。全度数はmodes/&lt;mode&gt;/frequencies.csvに保持されます。</div>
 </section>
 <section id="prefixes" role="tabpanel" aria-labelledby="tab-prefixes" hidden>
 <h2>Prefix Analysis</h2><p class="muted">normalized /24ごとに1行・1点。重複して選定された/24はモードの対応をまとめて表示します。</p>
@@ -113,6 +123,138 @@ $('ecdf-svg').addEventListener('pointerup',event=>{if(dragStart===null)return;co
 $('ecdf-svg').addEventListener('pointercancel',()=>{dragStart=null;renderECDF();});
 $('ecdf-svg').addEventListener('wheel',event=>{const px=svgX(event,$('ecdf-svg'));if(px<LEFT||px>W-RIGHT)return;event.preventDefault();changeZoom(event.deltaY>0?1.3:1/1.3,(px-LEFT)/PW);},{passive:false});
 $('ecdf-download').addEventListener('click',()=>{const copy=$('ecdf-svg').cloneNode(true);copy.setAttribute('xmlns',NS);copy.setAttribute('width',String(W));copy.setAttribute('height',String(H+100));copy.setAttribute('viewBox','0 0 1000 560');copy.querySelector('#ecdf-selection')?.remove();copy.querySelectorAll('text').forEach(t=>{t.setAttribute('font-family','sans-serif');t.setAttribute('font-size','12');t.setAttribute('fill','#294459');});let offset=20;for(const key of SERIES){if(!visible.has(key))continue;copy.append(svgNode('text',{x:offset,y:H+25,fill:COLOR[key],'font-size':13,'font-family':'sans-serif'},LABEL[key]));offset+=160;}copy.append(svgNode('text',{x:LEFT,y:H+50,'font-size':11,'font-family':'sans-serif',fill:'#294459'},'Simplified curves: steps are lower bounds; shaded band reaches next-point upper bound.'),svgNode('text',{x:LEFT,y:H+72,'font-size':11,'font-family':'sans-serif',fill:'#294459'},'Dataset: '+display(data.dataset_id)+' · '+display(data.evidence)));const url=URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'})),a=node('a');a.href=url;a.download='rls-weight-ecdf.svg';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+// Per-prefix presentation consumes saved frequencies; no browser aggregation.
+const ppData=object(data.per_prefix_ecdf),ppCurves=object(ppData.curves);
+const ppSelected=new Map(),ppDecoded=new Map();
+const PP_COLORS=['#146f9b','#a349a4','#15836d','#ba641c','#b3374b'];
+let ppPage=0,ppFiltered=[],ppFull=[0,1],ppRange=[0,1],ppDrag=null,ppTraces=[];
+function ppPoints(curve){
+  return array(curve.points).filter(p=>p&&Number.isFinite(logInteger(p.packet_count))&&Number.isFinite(p.cumulative_fraction))
+    .map(p=>({raw:p,lx:logInteger(p.packet_count),fy:p.cumulative_fraction}));
+}
+function ppDecode(prefix){
+  if(ppDecoded.has(prefix))return ppDecoded.get(prefix);
+  const curve=object(ppCurves[prefix]);let points=[];
+  try{points=JSON.parse(curve.encoded_points||'[]');}catch(error){/* Missing display data is shown as empty. */}
+  const decoded=ppPoints({...curve,points});ppDecoded.set(prefix,decoded);return decoded;
+}
+function ppUpdateOptions(){
+  const mode=$('pp-mode').value,q=$('pp-search').value.trim().toLowerCase();
+  ppFiltered=allPrefixes.filter(p=>array(p.modes).includes(mode)&&String(p.prefix_24).toLowerCase().includes(q));
+  const pages=Math.max(1,Math.ceil(ppFiltered.length/20));ppPage=Math.max(0,Math.min(ppPage,pages-1));
+  $('pp-options').replaceChildren();
+  for(const p of ppFiltered.slice(ppPage*20,(ppPage+1)*20)){
+    const label=node('label'),input=node('input');input.type='checkbox';input.value=p.prefix_24;
+    input.checked=ppSelected.has(p.prefix_24);input.disabled=!input.checked&&ppSelected.size>=5;
+    label.append(input,document.createTextNode(' '+p.prefix_24));
+    input.addEventListener('change',()=>{
+      if(input.checked&&ppSelected.size<5){const used=new Set(ppSelected.values());ppSelected.set(p.prefix_24,PP_COLORS.find(c=>!used.has(c)));}
+      else{ppSelected.delete(p.prefix_24);ppDecoded.delete(p.prefix_24);}
+      ppUpdateOptions();ppRefresh(true);
+    });$('pp-options').append(label);
+  }
+  if(!ppFiltered.length)$('pp-options').append(node('p','該当する/24がありません。','empty'));
+  $('pp-page-status').textContent=`${int(ppFiltered.length)}件 · ページ ${ppPage+1} / ${pages} · 選択 ${ppSelected.size} / 5`;
+  $('pp-prev').disabled=ppPage===0;$('pp-next').disabled=ppPage+1>=pages;
+  $('pp-selected').replaceChildren();
+  for(const [prefix,color] of ppSelected){
+    const button=node('button',prefix+' ×');button.style.color=color;button.setAttribute('aria-label',prefix+' の選択を解除');
+    button.addEventListener('click',()=>{ppSelected.delete(prefix);ppDecoded.delete(prefix);ppUpdateOptions();ppRefresh(true);});
+    $('pp-selected').append(button);
+  }
+}
+function ppRefresh(reset){
+  const mode=$('pp-mode').value;ppTraces=[];
+  for(const [prefix,color] of ppSelected)ppTraces.push({key:prefix,label:prefix,color,dash:'',curve:object(ppCurves[prefix]),points:ppDecode(prefix)});
+  if($('pp-overall').checked)ppTraces.push({key:'overall',label:'Overall',color:COLOR.overall_ipv4,dash:'6 3',curve:object(ecdfs.overall_ipv4),points:ppPoints(object(ecdfs.overall_ipv4)),reference:true});
+  if($('pp-union').checked)ppTraces.push({key:'union',label:mode+' selected_union',color:COLOR[mode],dash:'2 3',curve:object(ecdfs[mode]),points:ppPoints(object(ecdfs[mode])),reference:true});
+  $('pp-union-label').textContent=mode+' selected_union';
+  if(reset){let max=1;for(const t of ppTraces)if(t.points.length)max=Math.max(max,t.points.at(-1).lx);ppFull=[0,max];ppRange=[...ppFull];}
+  $('pp-legend').replaceChildren();$('pp-reduction').replaceChildren();
+  for(const trace of ppTraces){
+    const legend=node('span',undefined,'legend-button'),swatch=node('span',undefined,'swatch');
+    swatch.style.borderColor=trace.color;swatch.style.borderTopStyle=trace.reference?'dashed':'solid';legend.append(swatch,node('span',trace.label));$('pp-legend').append(legend);
+    const c=trace.curve,note=node('div',undefined,'curve-note');note.append(node('strong',trace.label));
+    note.append(node('span',!trace.points.length?'空分布または表示データなし':
+      `表示 ${int(c.displayed_point_count)} / 正確な異なる値 ${int(c.exact_point_count)} · `+
+      (c.simplified?'縮約あり: 階段は下界、帯は上界。最大帯幅 '+display(c.error_bound):'縮約なし（全ECDF点）')));
+    $('pp-reduction').append(note);
+  }
+  const table=node('table'),head=node('tr');head.append(node('th','normalized /24'));
+  const fields=['flow_count','packet_total','byte_total','median','p95','mean_packet_count','one_packet_rate'];
+  for(const field of fields)head.append(node('th',field));const thead=node('thead');thead.append(head);table.append(thead);
+  const body=node('tbody');
+  for(const prefix of ppSelected.keys()){
+    const p=allPrefixes.find(p=>p.prefix_24===prefix),stats=object(p?.stats),row=node('tr');row.dataset.prefix=prefix;
+    const name=node('td',prefix);name.style.color=ppSelected.get(prefix);row.append(name);
+    for(const [i,key] of fields.entries()){const value=stats[key],cell=node('td',i<3?int(value):key==='one_packet_rate'?percent(value):number(value));cell.title=display(value);row.append(cell);}body.append(row);
+  }
+  table.append(body);$('pp-stats').replaceChildren(table);
+  if(!ppSelected.size)$('pp-stats').append(node('p','選定モードを選び、比較する/24にチェックを入れてください。','empty'));
+  hideTooltip();ppRender();
+}
+function ppRender(){
+  const svg=$('pp-svg'),{x,y}=axes(svg,ppRange,[0,1],'packet_count per flow · log scale','Cumulative fraction');
+  svg.dataset.xMin=String(ppRange[0]);svg.dataset.xMax=String(ppRange[1]);
+  const defs=svgNode('defs'),clip=svgNode('clipPath',{id:'pp-clip'});clip.append(svgNode('rect',{x:LEFT,y:TOP,width:PW,height:PH}));defs.append(clip);svg.append(defs);
+  const plotted=svgNode('g',{'clip-path':'url(#pp-clip)'});let count=0;
+  for(const t of ppTraces){
+    const points=t.points;if(!points.length)continue;count++;
+    const lower=[[ppRange[0],0]],upper=[[ppRange[0],0]];
+    for(let i=0;i<points.length;i++){
+      const p=points[i],prev=i?points[i-1].fy:0;lower.push([p.lx,prev],[p.lx,p.fy]);upper.push([p.lx,prev],[p.lx,p.fy]);
+      if(t.curve.simplified&&i+1<points.length)upper.push([p.lx,points[i+1].fy],[points[i+1].lx,points[i+1].fy]);
+    }
+    lower.push([Math.max(ppRange[1],points.at(-1).lx),points.at(-1).fy]);upper.push([Math.max(ppRange[1],points.at(-1).lx),points.at(-1).fy]);
+    const path=ps=>ps.map((p,i)=>(i?'L':'M')+x(p[0])+','+y(p[1])).join('');
+    if(t.curve.simplified)plotted.append(svgNode('path',{'data-prefix-envelope':t.key,d:path(lower)+path([...upper].reverse()).replace(/^M/,'L')+'Z',fill:t.color,'fill-opacity':.1}));
+    plotted.append(svgNode('path',{[t.reference?'data-reference':'data-prefix-curve']:t.key,d:path(lower),fill:'none',stroke:t.color,'stroke-width':t.reference?1.8:2.5,'stroke-dasharray':t.dash}));
+  }
+  svg.append(plotted);$('pp-status').textContent=`個別/24 ${ppSelected.size} / 5件を選択 · 描画 ${count}曲線（参照曲線を含む） · `+
+    (count?`log10(x): ${number(ppRange[0])} — ${number(ppRange[1])}`:'表示可能な非空の曲線がありません。');
+}
+function ppZoom(factor,anchor=.5){
+  const center=ppRange[0]+(ppRange[1]-ppRange[0])*anchor,span=Math.min(ppFull[1]-ppFull[0],Math.max(.01,(ppRange[1]-ppRange[0])*factor));
+  const start=Math.min(ppFull[1]-span,Math.max(ppFull[0],center-span*anchor));ppRange=[start,start+span];hideTooltip();ppRender();
+}
+function ppHover(event,logx){
+  const lines=['個別分布の実際のECDF選択点（最も近い点）'];
+  for(const t of ppTraces){
+    if(!t.points.length)continue;let lo=0,hi=t.points.length;
+    while(lo<hi){const mid=(lo+hi)>>1;if(t.points[mid].lx<logx)lo=mid+1;else hi=mid;}
+    let p=t.points[Math.min(lo,t.points.length-1)];if(lo>0&&Math.abs(t.points[lo-1].lx-logx)<Math.abs(p.lx-logx))p=t.points[lo-1];
+    lines.push(t.label+': packet_count '+display(p.raw.packet_count)+' · F(x) '+display(p.raw.cumulative_fraction)+'\n累積 '+display(p.raw.cumulative_count)+' / '+display(t.curve.total_flow_count)+' · 度数 '+display(p.raw.frequency));
+    if(t.curve.simplified)lines.push('縮約: 選択点は真値。中間の階段は下界、帯は上界。');
+  }tooltip(event,lines);
+}
+safePanel('per-prefix-picker',()=>{ppUpdateOptions();ppRefresh(true);});
+$('pp-mode').addEventListener('change',()=>{ppSelected.clear();ppDecoded.clear();ppPage=0;ppUpdateOptions();ppRefresh(true);});
+$('pp-search').addEventListener('input',()=>{ppPage=0;ppUpdateOptions();});
+$('pp-clear').addEventListener('click',()=>{ppSelected.clear();ppDecoded.clear();ppUpdateOptions();ppRefresh(true);});
+$('pp-prev').addEventListener('click',()=>{ppPage--;ppUpdateOptions();});$('pp-next').addEventListener('click',()=>{ppPage++;ppUpdateOptions();});
+for(const id of ['pp-overall','pp-union'])$(id).addEventListener('change',()=>ppRefresh(true));
+$('pp-zoom-in').addEventListener('click',()=>ppZoom(.5));$('pp-zoom-out').addEventListener('click',()=>ppZoom(2));
+$('pp-reset').addEventListener('click',()=>{ppRange=[...ppFull];hideTooltip();ppRender();});
+$('pp-svg').addEventListener('pointermove',event=>{
+  const px=svgX(event,$('pp-svg'));if(px<LEFT||px>W-RIGHT){hideTooltip();return;}ppHover(event,ppRange[0]+(px-LEFT)/PW*(ppRange[1]-ppRange[0]));
+  if(ppDrag!==null){let rect=$('pp-selection');if(!rect){rect=svgNode('rect',{id:'pp-selection',y:TOP,height:PH,fill:'#126ea6','fill-opacity':.16});$('pp-svg').append(rect);}rect.setAttribute('x',Math.min(ppDrag,px));rect.setAttribute('width',Math.abs(ppDrag-px));}
+});
+$('pp-svg').addEventListener('pointerleave',hideTooltip);
+$('pp-svg').addEventListener('pointerdown',event=>{const px=svgX(event,$('pp-svg'));if(event.button===0&&px>=LEFT&&px<=W-RIGHT){ppDrag=px;$('pp-svg').setPointerCapture(event.pointerId);}});
+$('pp-svg').addEventListener('pointerup',event=>{if(ppDrag===null)return;const end=Math.max(LEFT,Math.min(W-RIGHT,svgX(event,$('pp-svg')))),start=ppDrag;ppDrag=null;if(Math.abs(end-start)>8){const old=[...ppRange];ppRange=[old[0]+(Math.min(start,end)-LEFT)/PW*(old[1]-old[0]),old[0]+(Math.max(start,end)-LEFT)/PW*(old[1]-old[0])];}hideTooltip();ppRender();});
+$('pp-svg').addEventListener('pointercancel',()=>{ppDrag=null;ppRender();});
+$('pp-svg').addEventListener('wheel',event=>{const px=svgX(event,$('pp-svg'));if(px<LEFT||px>W-RIGHT)return;event.preventDefault();ppZoom(event.deltaY>0?1.3:1/1.3,(px-LEFT)/PW);},{passive:false});
+$('pp-download').addEventListener('click',()=>{
+  const copy=$('pp-svg').cloneNode(true);copy.querySelector('#pp-selection')?.remove();const height=H+110+ppTraces.length*20;
+  copy.setAttribute('xmlns',NS);copy.setAttribute('width',W);copy.setAttribute('height',height);copy.setAttribute('viewBox',`0 0 ${W} ${height}`);
+  copy.querySelectorAll('text').forEach(t=>{t.setAttribute('font-family','sans-serif');t.setAttribute('font-size','12');t.setAttribute('fill','#294459');});
+  ppTraces.forEach((t,i)=>copy.append(svgNode('text',{x:LEFT,y:H+20+i*20,fill:t.color,'font-size':12,'font-family':'sans-serif'},t.label)));
+  copy.append(svgNode('text',{x:LEFT,y:height-55,'font-size':11,'font-family':'sans-serif'},'Individual /24s may share flows. Curves are separate distributions; no mixing or averaging.'),
+    svgNode('text',{x:LEFT,y:height-35,'font-size':11,'font-family':'sans-serif'},'Simplified curves: lower steps / upper bands. Exact frequencies: modes/<mode>/frequencies.csv.'),
+    svgNode('text',{x:LEFT,y:height-15,'font-size':11,'font-family':'sans-serif'},'Dataset: '+display(data.dataset_id)+' · mode: '+$('pp-mode').value));
+  const url=URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'})),a=node('a');a.href=url;a.download='rls-per-prefix-ecdf.svg';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+});
+
 const COLUMNS=[['prefix_24','normalized /24','text'],['modes','選定モード','text'],['native','Native prefix対応','text'],['flow_count','Flow count','integer'],['packet_total','Packet total','integer'],['byte_total','Byte total','integer'],['mean_packet_count','Mean packets','number'],['median','Median','number'],['p95','P95','number'],['one_packet_rate','One-packet rate','number']];
 function nativeText(p){return Object.entries(object(p.native_prefixes)).map(([mode,list])=>mode+': '+array(list).map(String).join(', ')).join(' · ');}
 function valueFor(p,key){if(key==='native')return nativeText(p);if(key==='modes')return array(p.modes).join(', ');return key==='prefix_24'?p.prefix_24:object(p.stats)[key];}
@@ -126,7 +268,7 @@ function closestScatter(event){const rect=$('scatter-canvas').getBoundingClientR
 safePanel('prefix-head',()=>{for(const [key,label] of COLUMNS){const th=node('th'),button=node('button',label);th.dataset.key=key;th.dataset.label=label;button.addEventListener('click',()=>{sortDirection=sortKey===key?-sortDirection:1;sortKey=key;const old=page;filterPrefixes();page=old;renderPrefixTable();});th.append(button);$('prefix-head').append(th);}for(const m of MODES){const marker=node('span');marker.style.color=COLOR[m];marker.textContent='● '+m;$('scatter-legend').append(marker);}$('scatter-legend').append(node('span','複数モード = 分割した円（同じ/24の統計を共有）','caption'));filterPrefixes();});
 $('prefix-search').addEventListener('input',filterPrefixes);$('prefix-mode').addEventListener('change',filterPrefixes);$('prefix-page-size').addEventListener('change',()=>{pageSize=Number($('prefix-page-size').value);page=0;renderPrefixTable();});$('prefix-prev').addEventListener('click',()=>{page--;renderPrefixTable();});$('prefix-next').addEventListener('click',()=>{page++;renderPrefixTable();});
 $('scatter-canvas').addEventListener('pointermove',event=>{const point=closestScatter(event);if(!point){hideTooltip();return;}const p=point.p,s=object(p.stats);tooltip(event,[display(p.prefix_24)+' · '+array(p.modes).join(', '),'flow_count: '+display(s.flow_count),'mean_packet_count: '+display(s.mean_packet_count),'packet_total: '+display(s.packet_total),'byte_total: '+display(s.byte_total),nativeText(p)]);});$('scatter-canvas').addEventListener('pointerleave',hideTooltip);$('scatter-canvas').addEventListener('click',event=>{const point=closestScatter(event);if(point){$('prefix-search').value=display(point.p.prefix_24);hideTooltip();filterPrefixes();}});
-safePanel('provenance',()=>{const provenance=object(data.provenance);$('provenance').append(node('h3','条件・出典・検証の保存済み記録'));const entries=[['Schema version',data.schema_version],['集計・度数schema',provenance.schemas],['Dataset ID',data.dataset_id],['Evidence',data.evidence],['共通の比較条件',data.conditions],['各runと選定モード',data.runs],['比較条件の検証結果',provenance.validation],['Canonical入力・flow manifest・SHA-256',provenance.inputs],['比較実装・RLS実行ファイルの識別情報',provenance.implementation],['表示条件・ECDF削減設定',provenance.display],['出力成果物のhash / レコード数',provenance.artifacts]];for(const [label,value] of entries){const detail=node('details'),summary=node('summary',label),pre=node('pre',value==null?'記録がありません。':typeof value==='string'?value:JSON.stringify(value,null,2));detail.append(summary,pre);$('provenance').append(detail);}});
+safePanel('provenance',()=>{const provenance=object(data.provenance);$('provenance').append(node('h3','条件・出典・検証の保存済み記録'));const entries=[['Schema version',data.schema_version],['集計・度数schema',provenance.schemas],['Dataset ID',data.dataset_id],['Evidence',data.evidence],['共通の比較条件',data.conditions],['各runと選定モード',data.runs],['比較条件の検証結果',provenance.validation],['Canonical入力・flow manifest・SHA-256',provenance.inputs],['比較実装・RLS実行ファイルの識別情報',provenance.implementation],['表示条件・ECDF削減設定',provenance.display],['保存済み比較からのHTML再生成',provenance.dashboard_refresh],['出力成果物のhash / レコード数',provenance.artifacts]];for(const [label,value] of entries){const detail=node('details'),summary=node('summary',label),pre=node('pre',value==null?'記録がありません。':typeof value==='string'?value:JSON.stringify(value,null,2));detail.append(summary,pre);$('provenance').append(detail);}});
 })();
 </script>
 </body>
