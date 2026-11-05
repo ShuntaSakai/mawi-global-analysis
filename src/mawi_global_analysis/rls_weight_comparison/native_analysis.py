@@ -44,7 +44,7 @@ def _ingest(db, infos, chunksize):
         net=ipaddress.ip_network(p);lookup[(net.prefixlen,int(net.network_address))]=p
     masks={length:(0xffffffff<<(32-length))&0xffffffff for length in {key[0] for key in lookup}}
     expected=Counter(dict.fromkeys(targets,0))
-    first=infos['packet']
+    first=next(iter(infos.values()))
     for chunk in _chunks(first,'flows',('flow_id','ip_version','packet_count','byte_count','src_ip','dst_ip','protocol'),chunksize):
         packets=_integers(chunk.packet_count,'flows.packet_count',1)
         sizes=_integers(chunk.byte_count,'flows.byte_count',0)

@@ -124,3 +124,16 @@ reuse the normalized24 quantile/total conventions. The new native HTML and scope
 comparison are separate from the preserved normalized artifacts; an additive
 native extension in the comparison manifest binds actual input paths/hashes,
 exact outputs and checked invariants. See [the native guide](../guide/rls-native-comparison.md).
+
+## Legacy BPF versus canonical-input selection comparison
+
+The separate A/B/C experiment evaluates fixed corrected native sets on common
+canonical IPv4 TCP/UDP Raw flows with src OR dst and unique flow_id unions.
+A/B have an explicit recorded-config BPF contrast; missing historical hashes or
+gzip temporary-input bindings are recorded as limitations, not inferred.
+C's stored binary records and packet/byte audits are checked against canonical
+rows without conversion or execution. B/C differences also include first-stage
+aggregation and input format. Exact-CIDR exclusion rebuilds the union from
+remaining edges; shared flows survive. A supplied Notebook export match does
+not independently authenticate the original conference execution. Details are
+in [the A/B/C guide](../guide/aguri-selection-comparison.md).
