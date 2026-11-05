@@ -37,6 +37,27 @@ upstream、順序付きpatch hash、fork identity、未公開fork_commit=null、
 buildの検証は公開後src/hashとbinary/hashを照合する。パッチ変更後は別build先を使う。
 既存build・ファイル・symlinkを上書きしない。
 
+## Linux/GCCのpacking互換性
+
+独立パッチ内の`aguri_flow.h`で、未定義の`__packed`に限って
+`__attribute__((__packed__))`を定義する。システムが定義済みの属性は上書きしない。
+未定義のままの`struct flow_spec { ... } __packed;`は変数宣言となり、複数のCファイルで
+`__packed`が重複定義される。`-fcommon`によるリンク回避は採用しない。
+`aguri3_xflow/ip_parse.c`にも使用例があるが`#if 0`内であり、このビルドの対象ではない。
+
+サイズ（flow_spec=40、aguri_flow=56）、packed alignment、全field offsetをC11の
+`_Static_assert`でビルド時に確認する。入力ABIとネットワークbyte orderは変更しない。
+テストではClang/GNU GCC、macro未定義、`-fno-common`、複数翻訳単位、Python converterとの
+全56byte一致、両段の実行を確認する。Ubuntu実機での成功は別途手動確認とする。
+
+```sh
+CC=gcc python3 scripts/build_agurim_two_stage.py \
+  --output-dir build/agurim-two-stage-linux-packed-v2
+```
+
+既存buildを編集せず、新しい出力先へ再buildする。パッチ/source hashが変わるため、
+このbuildを使うrun/cacheも新しいidentityとなる。旧run/cacheを同一条件として上書きしない。
+
 ## 実行：保存canonicalから3つのrunを新規作成
 
 ```sh

@@ -637,3 +637,36 @@
 +    }
 +    (void)output_stage;(void)output_hash;
 +}
+--- a/src/aguri_flow.h
++++ b/src/aguri_flow.h
+@@ -29,0 +30,11 @@
++/* BSD exposes __packed on some systems; GCC/glibc need an explicit fallback.
++ * Never use -fcommon to hide a missing attribute: that creates a data symbol. */
++#include <stddef.h>
++#ifndef __packed
++# if defined(__GNUC__) || defined(__clang__)
++#  define __packed __attribute__((__packed__))
++# else
++#  error "aguri_flow requires a compiler with a packed-structure attribute"
++# endif
++#endif
++
+@@ -51,0 +63,18 @@
++
++/* Canonical converter contract: !16s16sHHBBHIIII, 56 network-order bytes.
++ * Fail the build rather than silently accepting a different host ABI. */
++_Static_assert(sizeof(struct flow_spec) == 40, "flow_spec must be 40 bytes");
++_Static_assert(_Alignof(struct flow_spec) == 1, "flow_spec must be packed");
++_Static_assert(sizeof(struct aguri_flow) == 56, "aguri_flow must be 56 bytes");
++_Static_assert(offsetof(struct flow_spec, fs_srcaddr) == 0, "fs_srcaddr offset");
++_Static_assert(offsetof(struct flow_spec, fs_dstaddr) == 16, "fs_dstaddr offset");
++_Static_assert(offsetof(struct flow_spec, fs_sport) == 32, "fs_sport offset");
++_Static_assert(offsetof(struct flow_spec, fs_dport) == 34, "fs_dport offset");
++_Static_assert(offsetof(struct flow_spec, fs_ipver) == 36, "fs_ipver offset");
++_Static_assert(offsetof(struct flow_spec, fs_prot) == 37, "fs_prot offset");
++_Static_assert(offsetof(struct flow_spec, fs_pad) == 38, "fs_pad offset");
++_Static_assert(offsetof(struct aguri_flow, agflow_fs) == 0, "agflow_fs offset");
++_Static_assert(offsetof(struct aguri_flow, agflow_packets) == 40, "packet offset");
++_Static_assert(offsetof(struct aguri_flow, agflow_bytes) == 44, "byte offset");
++_Static_assert(offsetof(struct aguri_flow, agflow_first) == 48, "first time offset");
++_Static_assert(offsetof(struct aguri_flow, agflow_last) == 52, "last time offset");
