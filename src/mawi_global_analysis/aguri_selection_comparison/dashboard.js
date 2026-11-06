@@ -15,7 +15,9 @@ const tabs=[...document.querySelectorAll('[role=tab]')];function selectTab(tab){
 tabs.forEach((b,i)=>{b.addEventListener('click',()=>selectTab(b));b.addEventListener('keydown',e=>{const next=e.key==='ArrowRight'?(i+1)%tabs.length:e.key==='ArrowLeft'?(i+tabs.length-1)%tabs.length:null;if(next!=null){e.preventDefault();selectTab(tabs[next]);tabs[next].focus();}});});
 $('evidence').textContent=KEYS.some(k=>String(obj(runs[k]).source_evidence||'').includes('synthetic'))?'合成データ · 実MAWIの結果ではありません':'保存済みrunの記述比較 · 入力来歴を確認してください';
 $('dataset').textContent='Dataset · '+show(data.dataset_id);$('ab-verification').textContent='検証範囲: '+show(validation.ab_contrast_verification)+'。';
-table(['条件','run','選定入力','BPF'],KEYS.map(k=>[k,obj(runs[k]).run_name,obj(runs[k]).selection_input,obj(runs[k]).bpf??(k==='C'?'canonical入力（PCAP BPFなし）':'なし')]),'conditions');
+$('selection-description').textContent='A：旧Aguri unfiltered · B：旧Aguri IPv4 TCP/UDP · C：'+show(obj(obj(runs.C).selection_details).description??obj(runs.C).selection_input);
+$('bc-interpretation').textContent='B→C: '+show(obj(validation.interpretation).B_to_C)+'。';
+table(['条件','run','選定入力','BPF'],KEYS.map(k=>[k,obj(runs[k]).run_name,obj(obj(runs[k]).selection_details).description??obj(runs[k]).selection_input,obj(runs[k]).bpf??(k==='C'?'canonical入力（PCAP BPFなし）':'なし')]),'conditions');
 const FIELDS=[['flow_count','Flow count',integer],['packet_total','Packet total',integer],['byte_total','Byte total',integer],['median','Median',num],['p95','P95',num],['mean_packet_count','Mean packets',num],['one_packet_rate','One-packet rate',pct]];
 const summary=[['選定native prefix数',...KEYS.map(k=>[integer(obj(conditions[k]).selected_native_prefix_count),obj(conditions[k]).selected_native_prefix_count])]];
 for(const [key,label,format] of FIELDS)summary.push([label,...KEYS.map(k=>{const v=obj(obj(conditions[k]).stats)[key];return[format(v),v];})]);

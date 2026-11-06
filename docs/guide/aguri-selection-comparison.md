@@ -1,4 +1,4 @@
-# 旧Aguri BPF条件とcanonical Agurim′のA/B/C比較
+# 旧Aguri BPF条件とcanonical packet選定のA/B/C比較
 
 保存済みrunのみを読み、同じcanonical IPv4 TCP/UDP・Raw・native src OR dst・
 flow_id一意unionで評価する。PCAP解析、canonical生成、Aguri3/Agurim/Agurim′実行はしない。
@@ -8,7 +8,11 @@ flow_id一意unionで評価する。PCAP解析、canonical生成、Aguri3/Agurim
 | --- | --- | --- |
 | A | baseline | 旧PCAP→Aguri3→Agurim、BPFなし |
 | B | agurim-ipv4-tcp-udp | 同じ旧経路、`-f 'ip and (tcp or udp)'` |
-| C | canonical-packet-t1-h2 | canonical→改変版Agurim′、packet、1%、`-D -D` |
+| C（互換既定） | canonical-packet-t1-h2 | canonical→改変版Agurim′、packet、1%、heuristics=2 (`-D -D`) |
+| C（2段階指定） | canonical-2stage-packet-t1-h0 | canonical→拡張Aguri3→拡張Agurim、packet、両段1%、heuristics=0 |
+
+Cはrun名ではなくrun manifestのschemaから方式を判定する。旧Cの既定値は互換性のため維持する。
+2段階Cは`--run-c canonical-2stage-packet-t1-h0`で明示する。
 
 ## 手動実行
 
@@ -18,7 +22,8 @@ flow_id一意unionで評価する。PCAP解析、canonical生成、Aguri3/Agurim
 ```sh
 cd /Users/shunta/mawi-global-analysis
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m mawi_global_analysis.aguri_selection_comparison \
-  --root /Users/shunta/mawi-global-analysis --dataset 202604081400 \
+  --root "$PWD" --dataset 202604081400 \
+  --run-a baseline --run-b agurim-ipv4-tcp-udp --run-c canonical-2stage-packet-t1-h0 \
   --validate-only --json
 ```
 
@@ -27,7 +32,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m mawi_global_analysis.aguri_selecti
 ```sh
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m mawi_global_analysis.aguri_selection_comparison \
   --root /Users/shunta/mawi-global-analysis --dataset 202604081400 \
-  --run-a baseline --run-b agurim-ipv4-tcp-udp --run-c canonical-packet-t1-h2 \
+  --run-a baseline --run-b agurim-ipv4-tcp-udp --run-c canonical-2stage-packet-t1-h0 \
   --output-dir /absolute/path/new-abc-comparison \
   --scratch-dir /absolute/path/existing-scratch \
   --chunksize 100000 --max-ecdf-points 2000
@@ -46,8 +51,10 @@ Python API：
 from pathlib import Path
 from mawi_global_analysis.aguri_selection_comparison import validate_inputs, generate, verify_manifest
 
-validation = validate_inputs(Path('/analysis-root'), '202604081400')
+validation = validate_inputs(Path('/analysis-root'), '202604081400',
+                             run_c='canonical-2stage-packet-t1-h0')
 manifest = generate(Path('/analysis-root'), '202604081400', Path('/new-output'),
+                    run_c='canonical-2stage-packet-t1-h0',
                     chunksize=100000, scratch_dir=Path('/scratch'))
 verify_manifest(manifest)  # 保存済み出力hash/schema/行数/検証記録の再確認、再解析なし
 ```
@@ -62,7 +69,7 @@ verify_manifest(manifest)  # 保存済み出力hash/schema/行数/検証記録�
 - A/BのAguri cache fingerprint、実行ファイルhash、保存configと2段の実行引数を照合。
   getoptでattached/clustered引数も解析し、Aはfilterゼロ、Bは指定filter1つだけを要求する。
   BPF以外のAguri3 option、Agurim option、flow/prefix/analysis/scan/legacy設定が異なれば拒否する。
-- 実行ファイルが存在すれば実hashを照合する。存在しなければrecorded_hash_onlyと明示する。
+- A/B・旧Cは実行ファイルが存在すれば実hashを照合する。存在しなければrecorded_hash_onlyと明示する。
   バージョン確認を含め、実行ファイルを呼び出すことはない。
 - Aguri-v1はraw AGR/renderedのhistorical hashを記録しない。
   現在のhashと、保存renderedから再parseした候補CSV、記録producer・corrected台帳を照合するが、
@@ -72,10 +79,16 @@ verify_manifest(manifest)  # 保存済み出力hash/schema/行数/検証記録�
   この場合`ab_config_bpf_only=true`、`ab_bpf_only=false`、
   `ab_contrast_verification`で「設定上のBPF差だけ確認、展開内容は独立未確認」と記録・表示する。
   非gzipで`ab_bpf_only=true`でも、それは保存manifest上の入力/引数の結合であり、過去実行の認証ではない。
-- Cはcanonical入力lineage、packet basis、1%、heuristics2、converter実装、fork metadataを検証。
+- 旧C（`agurim-prime-run-v1`）はcanonical入力lineage、packet basis、1%、heuristics=2、converter実装、fork metadataを検証。
   fork_identity・明示的fork_commit（未公開ならnull）・compiler・source hash・build hashを必要とする。
   build_manifestがあれば実hash/内容を照合し、なければ記録のみの限界を示す。
-- Cの保存済みcanonical.binの全56byte recordを、converter ABI/スカラー規約を再利用して
+- 新C（`aguri-two-stage-run-v1`）は`aguri_two_stage.validation.inspect_lineage()`を再利用。
+  packet basis・両段1%・heuristics=0を必須にし、両段argv、wire設定・整数カウンタ・候補、
+  canonical入力、cache/producer/manifest/fingerprint/hash、corrected台帳を厳密に照合する。
+  build_manifestとsource・両実行ファイルが実在し、現在のpatch/実装と一致することが必要。
+  欠損時に旧Cのrecorded-only経路へフォールバックしない。
+  未知schemaや両方式のcache/artifactを混在させたmanifestも拒否する。
+- 両方式Cの保存済みcanonical.binの全56byte recordを、converter ABI/スカラー規約を再利用して
   canonical行と順序・src/dst・port・protocol・packet/byte重み・timestampまで逐次照合する。
   binaryを作成し直す処理ではない。packet/byte総量を含むauditも照合する。
 - 3runとも候補からcorrected prefix ledgerを再構成して保存台帳と一致検証。
@@ -84,8 +97,10 @@ verify_manifest(manifest)  # 保存済み出力hash/schema/行数/検証記録�
 - 入力を前後にhash検証し、全成果物を検証して完了manifestを最後に公開する。
   元ファイルを解析中に変更しないこと。immutable filesystem snapshotを作る機能ではない。
 
-A→Bは上記で確認できた範囲のBPF対照。B→Cは一次集約方式、入力粒度、endpointの選定時の扱いも
-変わり得るため、純粋なRLS実装差とは解釈しない。
+A→Bは上記で確認できた範囲のBPF対照。旧Cとの比較は一次集約の有無・入力形式・heuristicsも異なる。
+新Cは同じ2段階構成だが、PCAPパケットとcanonicalフローの入力単位、endpointの向き、
+重み付きwire、決定的な段間buffer受渡しも異なる。いずれも純粋なRLS実装差とは解釈しない。
+HTMLのヘッダー・条件表・B→C説明は検証済み方式に追従する。
 
 ## 集計・寄与の定義
 
@@ -145,6 +160,11 @@ manifest=`aguri-selection-comparison-v1`、validation=`aguri-selection-validatio
 | modes/A,B,C/summary.json | 各prefix・union・Overallの正確な統計、入力hash・histogram規約 |
 | modes/A,B,C/frequencies.csv | distribution,packet_count,frequency。各native/union/Overallの全整数度数 |
 | comparison_manifest.json | 前後validation、入力・実装・出力hash/件数、表示設定、証拠範囲。最後に公開 |
+
+`summary.json`と`comparison_manifest.json`に加算フィールド`selection_conditions`を保存する。
+Cのmethod・basis・threshold_percent・heuristics・各stageと条件表示をvalidationに結合し、
+`verify_manifest()`で不整合を拒否する。schema v1の既存成果物はこのフィールドがなくても検証できる。
+CSVの形式・統計規約・A/Bの集計は変更しない。過去bundleの自動更新もしない。
 
 CSV nullは空セル、JSONはnull、HTMLは「—」。研究用整数値を維持し、ブラウザで安全な範囲を超える
 整数は十進文字列にする。正確な比は累積数/分母やKS分子/分母、CDF表示は浮動小数点。

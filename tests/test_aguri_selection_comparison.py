@@ -53,7 +53,7 @@ def fixture_root(root,empty=False):
     flows=root/'data/fixture/processed/flows/flows.csv';flows.parent.mkdir(parents=True)
     pd.DataFrame(rows,columns=FLOW_COLUMNS).to_csv(flows,index=False)
     fm=flows.with_name('flow_manifest.json');fp=flow_fingerprint(capture,cfg,FLOW_SCHEMA_VERSION)
-    save(fm,dict(schema_version=FLOW_SCHEMA_VERSION,input_sha256=capture,fingerprint=fp,row_count=len(rows),flow_config=flow_generation_config(cfg)))
+    save(fm,dict(schema_version=FLOW_SCHEMA_VERSION,input_sha256=capture,fingerprint=fp,row_count=len(rows),flow_config=flow_generation_config(cfg),skipped_packet_counts={}))
     def entry(path,frame,producer=None):return dict(path=str(path),row_count=len(frame),sha256=sha256_file(path),producer=producer or {})
     for condition,run in [('A','baseline'),('B','agurim-ipv4-tcp-udp'),('C','canonical-packet-t1-h2')]:
         run_dir=root/'results/fixture'/run;run_dir.mkdir(parents=True)

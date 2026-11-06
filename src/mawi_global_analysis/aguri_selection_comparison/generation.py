@@ -18,6 +18,11 @@ REQUIRED={'dashboard.html','summary.json','selection_summary.csv','prefix_stats.
           *(f'modes/{c}/{n}' for c in CONDITIONS for n in ('summary.json','frequencies.csv'))}
 
 
+def _selection_conditions(validation):
+    return {key:dict(run_name=run['run_name'],selection_input=run['selection_input'],details=run.get('selection_details'))
+            for key,run in validation['runs'].items()}
+
+
 def verify_manifest(path: Path) -> dict:
     path=Path(path).expanduser().resolve();m=_json(path)
     if m.get('schema_version')!=SCHEMA or m.get('status')!='success':raise ValueError('unsupported/incomplete comparison manifest')
@@ -50,6 +55,10 @@ def verify_manifest(path: Path) -> dict:
     summary=_json(path.parent/'summary.json')
     if any(m.get(key)!=summary.get(key) for key in ('dataset_id','target')):
         raise ValueError('comparison summary metadata binding mismatch')
+    if 'selection_conditions' in m or 'selection_conditions' in summary:
+        expected=_selection_conditions(validation)
+        if m.get('selection_conditions')!=expected or summary.get('selection_conditions')!=expected:
+            raise ValueError('comparison selection conditions binding mismatch')
     if m.get('legacy')!=_json(path.parent/'legacy_comparison.json') or m['legacy'].get('historical_reproduction_verified') is not False:
         raise ValueError('legacy evidence binding mismatch')
     return m
@@ -71,6 +80,7 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         work=Path(temp)/'bundle'
         result=analyze_inputs(root,dataset_id,work,**args,scratch_dir=scratch_dir,max_ecdf_points=max_ecdf_points,
                               target=target,validation=validation,legacy_reference=legacy_reference)
+        result['selection_conditions']=_selection_conditions(validation)
         _write_csv(work/'focus_prefix.csv',('condition','selected','candidate_exact','candidate_covering',*STATS,'one_packet_count','in_union_flow_count','union_share'),
             [{**r,'condition':k,'candidate_covering':json.dumps(r['candidate_covering'])} for k,r in result['focus'].items()])
         records=[]
@@ -87,6 +97,10 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         for name in ('normalized24/analysis.py','normalized24/statistics.py','rls_weight_comparison/native_analysis.py','rls_weight_comparison/metrics.py',
                      'rls_weight_comparison/dashboard.py','rls_weight_comparison/dashboard.html','flow_length.py','aguri.py','prefix.py','membership.py'):
             implementation[name]=sha256_file(package/name)
+        if validation['runs']['C']['selection_details']['method']=='aguri-two-stage-packet':
+            for name in ('aguri_two_stage/validation.py','aguri_two_stage/stage.py','aguri_two_stage/wire.py',
+                         'agurim_prime/input.py','agurim_prime/stage.py'):
+                implementation[name]=sha256_file(package/name)
         payload={**result,'provenance':{'validation':validation,'implementation_sha256':implementation,'artifacts':_entries(work),
             'display':{'max_ecdf_points':max_ecdf_points,'statistics':'exact full frequencies; never sampled points',
                        'simplified':'retained true points; lower HV steps with next-point upper bounds'},
@@ -98,7 +112,7 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         for name,checksum in result['legacy'].get('tracked_files',{}).items():
             if sha256_file(Path(name))!=checksum:raise ValueError('legacy reference changed during comparison')
         manifest=dict(schema_version=SCHEMA,status='success',dataset_id=dataset_id,validation=validation,final_validation=final,
-                      target=target,implementation_sha256=implementation,artifacts=_entries(work),
+                      target=target,selection_conditions=result['selection_conditions'],implementation_sha256=implementation,artifacts=_entries(work),
                       display=payload['provenance']['display'],interpretation=validation['interpretation'],legacy=result['legacy'])
         _write_text(work/'comparison_manifest.json',json.dumps(manifest,indent=2,sort_keys=True,allow_nan=False)+'\n')
         verify_manifest(work/'comparison_manifest.json');_new_output(root,output);_publish(work,output)

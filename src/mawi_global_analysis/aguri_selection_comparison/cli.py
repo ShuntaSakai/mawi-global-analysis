@@ -1,4 +1,4 @@
-"""Dedicated saved-run Aguri BPF / canonical Agurim-prime comparison."""
+"""Dedicated saved-run Aguri BPF / canonical packet selector comparison (prime or two-stage)."""
 import argparse
 import json
 from pathlib import Path

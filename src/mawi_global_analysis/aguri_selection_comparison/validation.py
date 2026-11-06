@@ -10,6 +10,7 @@ import re
 import pandas as pd
 import yaml
 
+from mawi_global_analysis.aguri_two_stage.validation import inspect_lineage as inspect_two_stage_lineage
 from mawi_global_analysis.aguri import AGURI_CANDIDATE_COLUMNS, PINNED_AGURIM_SHA, parse_aguri_output
 from mawi_global_analysis.agurim_prime.input import CONVERTER_VERSION
 from mawi_global_analysis.agurim_prime.stage import METHODS, _options, _parse_control, inspect_prime_lineage
@@ -192,7 +193,61 @@ def _prime(root,info,label,inputs,tracked):
     equal('C.binary expected SHA-256',binary_check['expected_sha256'],cache['artifacts']['binary_input']['sha256'])
     return dict(binary_verification=binary_check,build_manifest_verification=build_verification,
                 run_name=info.manifest_path.parent.name,selection_input='canonical flows',bpf=None,
+                selection_details=_selection_details(False),canonical_audit=lineage['audit'],
                 executable={'agurim-prime':exe},candidate_path=str(cp),rendered_path=str(rp),lineage=lineage),candidates
+
+
+
+def _selection_details(two_stage):
+    heuristics=0 if two_stage else 2
+    return dict(method='aguri-two-stage-packet' if two_stage else METHODS['packet'],
+        basis='packet',threshold_percent=1,heuristics=heuristics,
+        stages=[dict(program=name,basis='packet',threshold_percent=1,heuristics=heuristics)
+                for name in (('aguri3','agurim') if two_stage else ('agurim-prime',))],
+        description=('canonical → 拡張Aguri3 → 拡張Agurim · packet · 両段1% · heuristics=0' if two_stage
+                     else 'canonical → Agurim′（1段階）· packet · 1% · heuristics=2'))
+
+
+def _two_stage(root,info,label,inputs,tracked):
+    # The shared inspector checks actual records, both wire stages, candidates,
+    # producer bindings, current build/patch identities and corrected selection.
+    # Track those dependencies as well so the final hash pass covers mutations.
+    path=resolve(root,info.manifest['cache']['aguri_two_stage']['manifest_path'])
+    checksum=track(path,tracked)
+    lineage=inspect_two_stage_lineage(info,root,inputs)
+    equal('C.cache_manifest.sha256',lineage['cache_manifest_sha256'],checksum)
+    identity=lineage['identity'];settings=identity['settings'];cache=_json(path)
+    equal('C.basis',identity.get('basis'),'packet')
+    equal('C.threshold',settings.get('threshold'),1)
+    equal('C.heuristics',settings.get('heuristics'),0)
+    for artifact in cache['artifacts'].values():
+        equal('C.cache.'+artifact['name'],track(path.parent/artifact['name'],tracked),artifact['sha256'])
+    build=identity['build'];build_path=resolve(root,build['build_manifest_path'])
+    equal('C.build_manifest.sha256',track(build_path,tracked),build['build_manifest_sha256'])
+    for name,digest in build['source_sha256'].items():
+        equal('C.build_source.'+name,track(build_path.parent/'src'/name,tracked),digest)
+    exes={name:executable({'path':str(build_path.parent/name),'sha256':digest},root,tracked,'C.'+name)
+          for name,digest in build['executable_sha256'].items()}
+    audit=lineage['audits']['input']
+    for field,expected in (('unit_packets',False),('scope','IPv4 TCP/UDP'),('orientation','first observed packet; not initiator/responder')):
+        equal('C.audit.'+field,audit.get(field),expected)
+    candidates=pd.read_csv(path.parent/'candidates.csv',dtype=str,keep_default_na=False)
+    return dict(run_name=info.manifest_path.parent.name,selection_input='canonical flows → Aguri3 → Agurim',bpf=None,
+        selection_details=_selection_details(True),canonical_audit=audit,executable=exes,
+        cache_manifest=str(path),cache_manifest_sha256=checksum,commands=cache['commands'],
+        candidate_path=str(path.parent/'candidates.csv'),rendered_path=str(path.parent/'stage2.agw'),lineage=lineage),candidates
+
+
+def _canonical_selector(root,info,label,inputs,tracked):
+    schema=info.manifest.get('schema_version')
+    if schema=='agurim-prime-run-v1':
+        incompatible=('aguri_two_stage','aguri_two_stage_candidates');handler=_prime
+    elif schema=='aguri-two-stage-run-v1':
+        incompatible=('agurim_prime','agurim_prime_candidates');handler=_two_stage
+    else:raise ValueError(f'C.run.schema: unsupported canonical selector schema {schema!r}')
+    if incompatible[0] in info.manifest.get('cache',{}) or incompatible[1] in info.manifest.get('artifacts',{}):
+        raise ValueError('C.run.schema: conflicting selector cache/artifact lineage')
+    return handler(root,info,label,inputs,tracked)
 
 
 def validate_inputs(root: Path,dataset_id: str,*,run_a: str=DEFAULT_RUNS['A'],run_b: str=DEFAULT_RUNS['B'],
@@ -214,7 +269,7 @@ def validate_inputs(root: Path,dataset_id: str,*,run_a: str=DEFAULT_RUNS['A'],ru
                     'row_count':info.entries['flows']['row_count'],'flow_config':info.flow_manifest['flow_config']}
             if canonical is None:canonical=common
             else:equal(label+'.canonical',common,canonical)
-            record,candidates=_prime(root,info,label,inputs,tracked) if label=='C' else _old(root,info,cfg,label,inputs,tracked)
+            record,candidates=_canonical_selector(root,info,label,inputs,tracked) if label=='C' else _old(root,info,cfg,label,inputs,tracked)
             expected=build_corrected_prefix_ledger(candidates,cfg)
             actual=pd.read_csv(info.paths['prefixes'],dtype=str,keep_default_na=False)
             expected=expected.sort_values('prefix').reset_index(drop=True);actual=actual.sort_values('prefix').reset_index(drop=True)
@@ -236,7 +291,7 @@ def validate_inputs(root: Path,dataset_id: str,*,run_a: str=DEFAULT_RUNS['A'],ru
     for section in ('prefix','analysis'):equal('A/B/C.'+section,getattr(configs['A'],section).model_dump(),getattr(configs['C'],section).model_dump())
     audit=_validate_scope(infos['A'],chunksize)
     for field in ('input_rows','included_flows','excluded_ipv6','excluded_protocol'):
-        equal('C.canonical.audit.'+field,runs['C']['lineage']['audit'].get(field),audit[field])
+        equal('C.canonical.audit.'+field,runs['C']['canonical_audit'].get(field),audit[field])
     for path,checksum in tracked.items():equal(path+': final hash',sha256_file(Path(path)),checksum)
     input_binding=all(runs[k]['capture_input']['verification']=='command_bound_to_declared_pcap_path' for k in ('A','B'))
     return dict(schema_version=SCHEMA,status='valid',dataset_id=dataset_id,ab_config_bpf_only=True,ab_bpf_only=input_binding,
@@ -245,5 +300,5 @@ def validate_inputs(root: Path,dataset_id: str,*,run_a: str=DEFAULT_RUNS['A'],ru
                 'endpoint_rule':'src_ip OR dst_ip','union_deduplication':'flow_id','quantile':'linear: (n-1)*q'}},
         tracked_files=tracked,scope_audit=audit,
         interpretation={'A_to_B':('recorded PCAP/executable/options contrast isolates BPF' if input_binding else 'recorded selector configuration differs only by BPF; gzip temporary input bytes cannot independently be linked')+'; older raw-output history not independently hash-bound',
-                        'B_to_C':'first aggregation and RLS input format also differ; not a pure RLS implementation effect'},
+                        'B_to_C':('both selectors use two stages, but PCAP packets versus canonical flows, endpoint orientation, weighted wire and deterministic stage handoff differ; not a pure RLS implementation effect' if runs['C']['selection_details']['method']=='aguri-two-stage-packet' else 'first aggregation, canonical input/orientation, RLS input format and heuristics also differ; not a pure RLS implementation effect')},
         validation_scope='contracts/current hashes/corrected selection; native edges checked during aggregation')

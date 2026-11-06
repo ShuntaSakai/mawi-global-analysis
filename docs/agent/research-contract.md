@@ -132,8 +132,12 @@ canonical IPv4 TCP/UDP Raw flows with src OR dst and unique flow_id unions.
 A/B have an explicit recorded-config BPF contrast; missing historical hashes or
 gzip temporary-input bindings are recorded as limitations, not inferred.
 C's stored binary records and packet/byte audits are checked against canonical
-rows without conversion or execution. B/C differences also include first-stage
-aggregation and input format. Exact-CIDR exclusion rebuilds the union from
+rows without conversion or execution. C is dispatched by saved schema: direct
+prime packet/1%/heuristics2 remains supported; canonical two-stage packet uses
+1%/heuristics0 in both stages and the dedicated strict two-stage lineage inspector.
+A/B and native evaluation semantics are unchanged. B/C differences include input
+granularity/orientation and wire/handoff behavior; direct-prime C also omits the
+first stage and changes heuristics. Exact-CIDR exclusion rebuilds the union from
 remaining edges; shared flows survive. A supplied Notebook export match does
 not independently authenticate the original conference execution. Details are
 in [the A/B/C guide](../guide/aguri-selection-comparison.md).

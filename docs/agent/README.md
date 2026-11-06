@@ -51,7 +51,7 @@ For native-prefix evaluation of fixed packet/byte/flow selections and direct
 native-versus-normalized24 scope comparisons, read [the native comparison guide](../guide/rls-native-comparison.md).
 
 For the dedicated legacy Aguri unfiltered / IPv4-TCP-UDP BPF / canonical packet
-Agurim-prime experiment, use [the A/B/C guide](../guide/aguri-selection-comparison.md).
+selector experiment (direct Agurim-prime or canonical two-stage), use [the A/B/C guide](../guide/aguri-selection-comparison.md).
 It has its own validation contract and does not reuse the three-weight validator.
 
 For canonical-input **Aguri3→Agurim two-stage** packet/byte/flow experiments, read
