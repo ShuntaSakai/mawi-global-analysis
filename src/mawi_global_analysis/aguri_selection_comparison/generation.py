@@ -5,35 +5,58 @@ import ipaddress
 from pathlib import Path
 import tempfile
 
-from mawi_global_analysis.hashing import sha256_file
+from mawi_global_analysis.hashing import sha256_file,stable_json_hash
 from mawi_global_analysis.normalized24.statistics import _new_output
 from mawi_global_analysis.rls_weight_comparison.generation import _entries,_publish,_write_text,_write_csv,_json,STATS
 from mawi_global_analysis.rls_weight_comparison.refresh import _guard_locations
 from .analysis import TARGET,analyze_inputs
-from .validation import DEFAULT_RUNS,CONDITIONS,SCHEMA as VALIDATION_SCHEMA,validate_inputs
+from .validation import (
+    CONDITIONS, CONDITIONS_V2, DEFAULT_RUNS, TWO_STAGE_BASES, _validate_inputs,
+    SCHEMA as VALIDATION_SCHEMA, SCHEMA_V2 as VALIDATION_SCHEMA_V2,
+)
 
 SCHEMA='aguri-selection-comparison-v1'
-REQUIRED={'dashboard.html','summary.json','selection_summary.csv','prefix_stats.csv','pairwise_prefixes.csv','jaccard.csv',
-          'ecdf_counts.csv','focus_prefix.csv','sensitivity_summary.csv','component_stats.csv','legacy_comparison.json',
-          *(f'modes/{c}/{n}' for c in CONDITIONS for n in ('summary.json','frequencies.csv'))}
+SCHEMA_V2='aguri-selection-comparison-v2'
+DATA_ARTIFACTS={'summary.json','selection_summary.csv','prefix_stats.csv','pairwise_prefixes.csv','jaccard.csv',
+                'ecdf_counts.csv','focus_prefix.csv','sensitivity_summary.csv','component_stats.csv','legacy_comparison.json'}
+
+
+def _required_artifacts(keys):
+    return DATA_ARTIFACTS | {f'modes/{key}/{name}' for key in keys for name in ('summary.json','frequencies.csv')}
+
+
+REQUIRED=_required_artifacts(CONDITIONS) | {'dashboard.html'}
+REQUIRED_V2=_required_artifacts(CONDITIONS_V2)
 
 
 def _selection_conditions(validation):
-    return {key:dict(run_name=run['run_name'],selection_input=run['selection_input'],details=run.get('selection_details'))
-            for key,run in validation['runs'].items()}
+    conditions={key:dict(run_name=run['run_name'],selection_input=run['selection_input'],details=run.get('selection_details'))
+                for key,run in validation['runs'].items()}
+    if validation['schema_version']==VALIDATION_SCHEMA_V2:
+        for condition in conditions.values():
+            condition['basis']=(condition['details'] or {}).get('basis')
+    return conditions
 
 
 def verify_manifest(path: Path) -> dict:
     path=Path(path).expanduser().resolve();m=_json(path)
-    if m.get('schema_version')!=SCHEMA or m.get('status')!='success':raise ValueError('unsupported/incomplete comparison manifest')
-    if not isinstance(m.get('artifacts'),dict) or not REQUIRED.issubset(m['artifacts']):raise ValueError('comparison artifacts missing')
+    schema=m.get('schema_version')
+    if schema not in (SCHEMA,SCHEMA_V2) or m.get('status')!='success':
+        raise ValueError('unsupported/incomplete comparison manifest')
+    v2=schema==SCHEMA_V2
+    keys=CONDITIONS_V2 if v2 else CONDITIONS
+    required=REQUIRED_V2 if v2 else REQUIRED
+    if not isinstance(m.get('artifacts'),dict) or not required.issubset(m['artifacts']):
+        raise ValueError('comparison artifacts missing')
+    if v2 and 'dashboard.html' in m['artifacts']:
+        raise ValueError('v2 comparison bundle is data-only')
     validation=m.get('validation')
     if (not isinstance(validation,dict) or validation!=m.get('final_validation')
-            or validation.get('schema_version')!=VALIDATION_SCHEMA or validation.get('status')!='valid'
+            or validation.get('schema_version')!=(VALIDATION_SCHEMA_V2 if v2 else VALIDATION_SCHEMA) or validation.get('status')!='valid'
             or validation.get('dataset_id')!=m.get('dataset_id') or validation.get('ab_config_bpf_only') is not True
             or type(validation.get('ab_bpf_only')) is not bool
             or validation.get('ab_bpf_only')!=validation.get('ab_input_binding_verified')
-            or not isinstance(validation.get('runs'),dict) or set(validation['runs'])!=set(CONDITIONS)
+            or not isinstance(validation.get('runs'),dict) or set(validation['runs'])!=set(keys)
             or not isinstance(validation.get('common'),dict) or not isinstance(validation['common'].get('canonical'),dict)):
         raise ValueError('comparison validation binding/structure mismatch')
     bindings=[]
@@ -55,7 +78,21 @@ def verify_manifest(path: Path) -> dict:
     summary=_json(path.parent/'summary.json')
     if any(m.get(key)!=summary.get(key) for key in ('dataset_id','target')):
         raise ValueError('comparison summary metadata binding mismatch')
-    if 'selection_conditions' in m or 'selection_conditions' in summary:
+    if v2:
+        if (summary.get('schema_version')!='aguri-selection-analysis-v2'
+                or summary.get('validation_sha256')!=stable_json_hash(validation)
+                or set(summary.get('conditions',{}))!=set(keys)):
+            raise ValueError('v2 comparison analysis/validation binding mismatch')
+        for key,basis in TWO_STAGE_BASES.items():
+            details=validation['runs'][key].get('selection_details') or {}
+            if details.get('basis')!=basis or details.get('method')!='aguri-two-stage-'+basis:
+                raise ValueError(f'{key}: comparison basis binding mismatch')
+        for key in keys:
+            mode=_json(path.parent/'modes'/key/'summary.json')
+            if (mode.get('schema_version')!='aguri-selection-statistics-v2'
+                    or mode.get('condition')!=key or mode.get('inputs')!=validation['runs'][key]['inputs']):
+                raise ValueError(f'{key}: comparison mode binding mismatch')
+    if v2 or 'selection_conditions' in m or 'selection_conditions' in summary:
         expected=_selection_conditions(validation)
         if m.get('selection_conditions')!=expected or summary.get('selection_conditions')!=expected:
             raise ValueError('comparison selection conditions binding mismatch')
@@ -64,15 +101,16 @@ def verify_manifest(path: Path) -> dict:
     return m
 
 
-def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A'],run_b=DEFAULT_RUNS['B'],run_c=DEFAULT_RUNS['C'],
+def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A'],run_b=DEFAULT_RUNS['B'],run_c=None,run_c_packet=None,run_c_flow=None,
              chunksize=100_000,scratch_dir=None,max_ecdf_points=2000,target=TARGET,legacy_reference=None) -> Path:
     target=str(ipaddress.ip_network(target,strict=True))
     if ipaddress.ip_network(target).version!=4 or ipaddress.ip_network(target).prefixlen<24:raise ValueError('target must be IPv4 /24..32')
     root=Path(root).expanduser().resolve();output=Path(output_dir).expanduser()
     if output.is_symlink():raise FileExistsError('existing output symlink')
     output=output.resolve();_new_output(root,output)
-    args=dict(run_a=run_a,run_b=run_b,run_c=run_c,chunksize=chunksize)
-    validation=validate_inputs(root,dataset_id,**args)
+    args=dict(run_a=run_a,run_b=run_b,run_c=run_c,run_c_packet=run_c_packet,run_c_flow=run_c_flow,chunksize=chunksize)
+    validation=_validate_inputs(root,dataset_id,**args)
+    v2=validation['schema_version']==VALIDATION_SCHEMA_V2
     protection={'source_runs':{k:{'inputs':r['inputs']} for k,r in validation['runs'].items()}}
     _guard_locations(root/'results'/dataset_id,protection,output,Path(scratch_dir).expanduser().resolve() if scratch_dir else None)
     output.parent.mkdir(parents=True,exist_ok=True)
@@ -81,6 +119,8 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         result=analyze_inputs(root,dataset_id,work,**args,scratch_dir=scratch_dir,max_ecdf_points=max_ecdf_points,
                               target=target,validation=validation,legacy_reference=legacy_reference)
         result['selection_conditions']=_selection_conditions(validation)
+        if v2:
+            result['validation_sha256']=stable_json_hash(validation)
         _write_csv(work/'focus_prefix.csv',('condition','selected','candidate_exact','candidate_covering',*STATS,'one_packet_count','in_union_flow_count','union_share'),
             [{**r,'condition':k,'candidate_covering':json.dumps(r['candidate_covering'])} for k,r in result['focus'].items()])
         records=[]
@@ -97,23 +137,25 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         for name in ('normalized24/analysis.py','normalized24/statistics.py','rls_weight_comparison/native_analysis.py','rls_weight_comparison/metrics.py',
                      'rls_weight_comparison/dashboard.py','rls_weight_comparison/dashboard.html','flow_length.py','aguri.py','prefix.py','membership.py'):
             implementation[name]=sha256_file(package/name)
-        if validation['runs']['C']['selection_details']['method']=='aguri-two-stage-packet':
+        if v2 or validation['runs']['C']['selection_details']['method']=='aguri-two-stage-packet':
             for name in ('aguri_two_stage/validation.py','aguri_two_stage/stage.py','aguri_two_stage/wire.py',
                          'agurim_prime/input.py','agurim_prime/stage.py'):
                 implementation[name]=sha256_file(package/name)
-        payload={**result,'provenance':{'validation':validation,'implementation_sha256':implementation,'artifacts':_entries(work),
-            'display':{'max_ecdf_points':max_ecdf_points,'statistics':'exact full frequencies; never sampled points',
-                       'simplified':'retained true points; lower HV steps with next-point upper bounds'},
-            'evidence':'Saved-run comparison; synthetic fixtures are not MAWI findings. No historical reproduction without bound reference.'}}
-        from .dashboard import render
-        _write_text(work/'dashboard.html',render(payload))
-        final=validate_inputs(root,dataset_id,**args)
+        display={'max_ecdf_points':max_ecdf_points,'statistics':'exact full frequencies; never sampled points',
+                 'simplified':'retained true points; lower HV steps with next-point upper bounds'}
+        if not v2:
+            payload={**result,'provenance':{'validation':validation,'implementation_sha256':implementation,
+                'artifacts':_entries(work),'display':display,
+                'evidence':'Saved-run comparison; synthetic fixtures are not MAWI findings. No historical reproduction without bound reference.'}}
+            from .dashboard import render
+            _write_text(work/'dashboard.html',render(payload))
+        final=_validate_inputs(root,dataset_id,**args)
         if final!=validation:raise ValueError('input provenance changed during comparison')
         for name,checksum in result['legacy'].get('tracked_files',{}).items():
             if sha256_file(Path(name))!=checksum:raise ValueError('legacy reference changed during comparison')
-        manifest=dict(schema_version=SCHEMA,status='success',dataset_id=dataset_id,validation=validation,final_validation=final,
+        manifest=dict(schema_version=SCHEMA_V2 if v2 else SCHEMA,status='success',dataset_id=dataset_id,validation=validation,final_validation=final,
                       target=target,selection_conditions=result['selection_conditions'],implementation_sha256=implementation,artifacts=_entries(work),
-                      display=payload['provenance']['display'],interpretation=validation['interpretation'],legacy=result['legacy'])
+                      display=display,interpretation=validation['interpretation'],legacy=result['legacy'])
         _write_text(work/'comparison_manifest.json',json.dumps(manifest,indent=2,sort_keys=True,allow_nan=False)+'\n')
         verify_manifest(work/'comparison_manifest.json');_new_output(root,output);_publish(work,output)
     return output/'comparison_manifest.json'

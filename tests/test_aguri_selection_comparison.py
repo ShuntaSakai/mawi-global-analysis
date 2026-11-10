@@ -36,7 +36,7 @@ def state(root):
 def api(name):return importlib.import_module('mawi_global_analysis.aguri_selection_comparison.'+name)
 
 
-def fixture_root(root,empty=False):
+def fixture_root(root,empty=False,*,extra_flows=()):
     """Seven manual flows; A includes shared f1/f2/f3, B also selects TARGET."""
     root=Path(root);root.mkdir(parents=True,exist_ok=True)
     cfg=load_config(ROOT/'configs/baseline.yaml');capture=hashlib.sha256(b'synthetic capture identity, never a real PCAP').hexdigest()
@@ -45,7 +45,7 @@ def fixture_root(root,empty=False):
             ('93.139.29.123','203.0.113.1',1,120),('192.0.2.3','192.0.2.4',10,1000),
             ('203.0.113.2','203.0.113.3',2,200),('93.139.29.123','93.139.29.123',1,140),
             ('2001:db8::1','2001:db8::2',7,700)]
-    for i,(src,dst,n,b) in enumerate([] if empty else values):
+    for i,(src,dst,n,b) in enumerate([] if empty else [*values,*extra_flows]):
         row=dict.fromkeys(FLOW_COLUMNS,0);row.update(flow_id=f'f{i}',ip_version=6 if ':' in src else 4,src_ip=src,dst_ip=dst,
             protocol=6,packet_count=n,byte_count=b,frame_byte_count=b,packets_from_src=n,packets_from_dst=0,
             bytes_from_src=b,bytes_from_dst=0)

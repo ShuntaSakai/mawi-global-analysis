@@ -16,7 +16,7 @@ from mawi_global_analysis.normalized24.statistics import _write_frequencies
 from mawi_global_analysis.rls_weight_comparison.generation import _write_csv, _write_text, STATS
 from mawi_global_analysis.rls_weight_comparison.metrics import ratio, ks_distance, write_ecdf
 from mawi_global_analysis.rls_weight_comparison.native_analysis import _ingest
-from .validation import CONDITIONS, DEFAULT_RUNS, validate_inputs
+from .validation import CONDITIONS, CONDITIONS_V2, DEFAULT_RUNS, _validate_inputs
 
 TARGET='93.139.29.123/32'
 
@@ -48,14 +48,21 @@ def _candidate_focus(path,target):
     return exact,sorted(covering)
 
 
-def analyze_inputs(root: Path,dataset_id: str,output: Path,*,run_a=DEFAULT_RUNS['A'],run_b=DEFAULT_RUNS['B'],run_c=DEFAULT_RUNS['C'],
+def analyze_inputs(root: Path,dataset_id: str,output: Path,*,run_a=DEFAULT_RUNS['A'],run_b=DEFAULT_RUNS['B'],run_c=None,run_c_packet=None,run_c_flow=None,
                    chunksize=100_000,scratch_dir=None,max_ecdf_points=2000,target=TARGET,validation=None,legacy_reference=None) -> dict:
     if type(max_ecdf_points) is not int or not 2<=max_ecdf_points<=50000:raise ValueError('max_ecdf_points must be in [2,50000]')
     target=str(ipaddress.ip_network(target,strict=True));target_net=ipaddress.ip_network(target)
     if target_net.version!=4 or target_net.prefixlen<24:raise ValueError('target must be a concrete IPv4 /24..32 prefix')
-    root=Path(root).resolve();output=Path(output);output.mkdir(parents=True,exist_ok=False)
-    validation=validation or validate_inputs(root,dataset_id,run_a=run_a,run_b=run_b,run_c=run_c,chunksize=chunksize)
-    infos={key:inspect_run(root,dataset_id,run,raw_only=True) for key,run in zip(CONDITIONS,(run_a,run_b,run_c))}
+    root=Path(root).resolve()
+    validation=validation or _validate_inputs(root,dataset_id,run_a=run_a,run_b=run_b,run_c=run_c,
+                                              run_c_packet=run_c_packet,run_c_flow=run_c_flow,chunksize=chunksize)
+    version=1 if set(validation['runs'])==set(CONDITIONS) else 2
+    condition_keys=CONDITIONS if version==1 else CONDITIONS_V2
+    if set(validation['runs'])!=set(condition_keys):
+        raise ValueError('unexpected comparison conditions')
+    infos={key:inspect_run(root,dataset_id,validation['runs'][key]['run_name'],raw_only=True)
+           for key in condition_keys}
+    output=Path(output);output.mkdir(parents=True,exist_ok=False)
     conditions={};prefixes={};focus={};sensitivities={};components={};changes=[]
     with tempfile.TemporaryDirectory(prefix='abc-native-',dir=scratch_dir) as temp:
         db=sqlite3.connect(Path(temp)/'working.sqlite')
@@ -66,7 +73,7 @@ def analyze_inputs(root: Path,dataset_id: str,output: Path,*,run_a=DEFAULT_RUNS[
                 INSERT INTO unions SELECT mode,id FROM edges WHERE scope='native' GROUP BY mode,id;
                 CREATE INDEX unions_id ON unions(id,condition);''')
             overall=None;spec=None
-            for key in CONDITIONS:
+            for key in condition_keys:
                 db.execute('DROP VIEW IF EXISTS membership')
                 db.execute(f"CREATE TEMP VIEW membership AS SELECT prefix,id FROM edges WHERE mode='{key}' AND scope='native'")
                 for table in ('dist','totals'):db.execute(f'DROP TABLE IF EXISTS {table}')
@@ -77,7 +84,7 @@ def analyze_inputs(root: Path,dataset_id: str,output: Path,*,run_a=DEFAULT_RUNS[
                 db.execute("INSERT INTO frequencies SELECT ?,packets,n FROM dist WHERE target='selected_union'",(key,))
                 folder=output/'modes'/key;folder.mkdir(parents=True)
                 with (folder/'frequencies.csv').open('w',encoding='utf-8',newline='') as stream:_write_frequencies(db,stream)
-                _write_text(folder/'summary.json',json.dumps(dict(schema_version='aguri-selection-statistics-v1',condition=key,
+                _write_text(folder/'summary.json',json.dumps(dict(schema_version=f'aguri-selection-statistics-v{version}',condition=key,
                     prefixes=cards,references=refs,inputs=validation['runs'][key]['inputs'],histogram_spec=spec.to_dict()),indent=2,allow_nan=False)+'\n')
                 stats=refs[0]['stats'];conditions[key]=dict(selected_native_prefix_count=len(cards),stats=stats,
                     coverage={k:ratio(stats[f],overall[f]) for k,f in (('flow','flow_count'),('packet','packet_total'),('byte','byte_total'))},
@@ -89,7 +96,7 @@ def analyze_inputs(root: Path,dataset_id: str,output: Path,*,run_a=DEFAULT_RUNS[
             # Completeness and canonical identity imply shared-prefix population
             # identity; additionally compare EVERY exported frequency row.
             db.execute('CREATE TABLE prefix_dist(condition TEXT,prefix TEXT,packets INTEGER,n INTEGER,PRIMARY KEY(condition,prefix,packets)) WITHOUT ROWID')
-            for key in CONDITIONS:
+            for key in condition_keys:
                 with (output/'modes'/key/'frequencies.csv').open() as stream:
                     for r in csv.DictReader(stream):
                         if r['distribution'] not in ('selected_union','overall_ipv4'):
@@ -104,7 +111,7 @@ def analyze_inputs(root: Path,dataset_id: str,output: Path,*,run_a=DEFAULT_RUNS[
             db.execute("CREATE TABLE degrees AS SELECT mode,id,COUNT(*) AS n FROM edges WHERE scope='native' GROUP BY mode,id")
             db.execute('CREATE UNIQUE INDEX degree_key ON degrees(mode,id)')
             contribution=[]
-            for key in CONDITIONS:
+            for key in condition_keys:
                 for p,row in prefixes.items():
                     if key not in row['conditions']:continue
                     exclusive=db.execute("SELECT COUNT(*),COALESCE(SUM(f.packets=1),0) FROM edges e JOIN degrees d ON e.mode=d.mode AND e.id=d.id JOIN facts f ON f.id=e.id WHERE e.mode=? AND e.scope='native' AND e.prefix=? AND d.n=1",(key,p)).fetchone()
@@ -112,13 +119,13 @@ def analyze_inputs(root: Path,dataset_id: str,output: Path,*,run_a=DEFAULT_RUNS[
                         union_share=ratio(row['stats']['flow_count'],conditions[key]['stats']['flow_count']),exclusive_union_flow_count=exclusive[0],exclusive_one_packet_count=exclusive[1]))
             lo,hi=int(target_net.network_address),int(target_net.broadcast_address)
             target_stats=_component(db,'target_membership','SELECT id FROM facts WHERE ipv=4 AND ((src BETWEEN ? AND ?) OR (dst BETWEEN ? AND ?))',(lo,hi,lo,hi),spec=spec)
-            for key in CONDITIONS:
+            for key in condition_keys:
                 exact,covering=_candidate_focus(validation['runs'][key]['candidate_path'],target)
                 in_union=db.execute('SELECT COUNT(*) FROM cohort_ids t JOIN unions u ON t.id=u.id WHERE u.condition=?',(key,)).fetchone()[0]
                 focus[key]=dict(selected=target in infos[key].selected_prefixes,candidate_exact=exact,candidate_covering=covering,
                     **target_stats,one_packet_count=db.execute('SELECT COALESCE(SUM(n),0) FROM frequencies WHERE distribution=? AND packets=1',('target_membership',)).fetchone()[0],
                     in_union_flow_count=in_union,union_share=ratio(in_union,conditions[key]['stats']['flow_count']))
-            for key in ('B','C'):
+            for key in condition_keys[1:]:
                 name=key+'_without_target'
                 after=_component(db,name,"SELECT DISTINCT id FROM edges WHERE mode=? AND scope='native' AND prefix!=?",(key,target),spec=spec)
                 sensitivities[key]=dict(before=conditions[key]['stats'],after=after,**ks_distance(db,name,'overall_ipv4'),
@@ -126,7 +133,7 @@ def analyze_inputs(root: Path,dataset_id: str,output: Path,*,run_a=DEFAULT_RUNS[
                     removed_flow_count=conditions[key]['stats']['flow_count']-after['flow_count'],excluded_prefix=target,
                     selected_before=target in infos[key].selected_prefixes,interpretation='post-selection exact-CIDR exclusion; union rebuilt from remaining edges')
             jaccard=[];pair_rows=[]
-            for a,b in combinations(CONDITIONS,2):
+            for a,b in combinations(condition_keys,2):
                 for kind,sa,sb in [('native_prefix',set(infos[a].selected_prefixes),set(infos[b].selected_prefixes)),
                     ('normalized24',{str(ipaddress.ip_network(p).supernet(new_prefix=24)) for p in infos[a].selected_prefixes},
                      {str(ipaddress.ip_network(p).supernet(new_prefix=24)) for p in infos[b].selected_prefixes})]:
@@ -152,10 +159,10 @@ def analyze_inputs(root: Path,dataset_id: str,output: Path,*,run_a=DEFAULT_RUNS[
             from .notebook_audit import audit_archives
             archive_audit=audit_archives()
             # Optional legacy-reference comparisons happen while exact facts/IDs remain on disk.
-            result=dict(schema_version='aguri-selection-analysis-v1',dataset_id=dataset_id,target=target,overall=overall,
+            result=dict(schema_version=f'aguri-selection-analysis-v{version}',dataset_id=dataset_id,target=target,overall=overall,
                 conditions=conditions,prefixes=list(prefixes.values()),prefix_contribution=contribution,focus=focus,
                 sensitivities=sensitivities,components=components,jaccard=jaccard,pairwise_prefixes=pair_rows,
-                curves={k:all_curves[k] for k in ('overall_ipv4',*CONDITIONS)},all_curves=all_curves,
+                curves={k:all_curves[k] for k in ('overall_ipv4',*condition_keys)},all_curves=all_curves,
                 legacy={'status':'reference_not_provided','current_A_union_matches_documented_expression':True,
                         'historical_reproduction_verified':False,'reason':'Historical input/ID/frequency reference is required; matching source code is not historical reproduction.'})
             if legacy_reference is not None:
