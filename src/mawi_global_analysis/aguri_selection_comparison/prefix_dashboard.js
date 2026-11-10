@@ -2,7 +2,7 @@
 (() => {
  const { $, el, svgEl, integer, num, pct, logInt, projectPoints, ecdfPaths, chart, hideTooltip } = AguriEcdf;
  const data = JSON.parse($('dashboard-data').textContent);
- const pageSize = 12;
+ const pageSize = 15;
  const tabs = Array.from(document.querySelectorAll('[role=tab]'));
  const keys = tabs.map(tab => tab.dataset.condition);
  const states = new Map(tabs.map(tab => [tab.dataset.condition, {

@@ -4,6 +4,8 @@ const {readFile} = require('node:fs/promises');
 const {resolve} = require('node:path');
 const {pathToFileURL} = require('node:url');
 
+const pageSize = 15;
+
 async function testOverlapFilters(page, data, keys) {
  await page.reload();
  const group = page.locator('#prefix-overlap-filters');
@@ -59,7 +61,7 @@ async function testOverlapFilters(page, data, keys) {
    }
   }
 
-  const multiPagePeer = peers.find(other=>[...selected[key]].filter(cidr=>selected[other].has(cidr)).length>12);
+  const multiPagePeer = peers.find(other=>[...selected[key]].filter(cidr=>selected[other].has(cidr)).length>pageSize);
   if (multiPagePeer) {
    await filter('all').click();
    await next.click();
@@ -128,7 +130,7 @@ async function testPrefixDashboard(page) {
   const seen = [];
   while (true) {
    const batch = await displayed();
-   assert(batch.length<=12);
+   assert(batch.length<=pageSize);
    seen.push(...batch);
    if (await next.isDisabled()) break;
    paging = true;
@@ -141,17 +143,29 @@ async function testPrefixDashboard(page) {
   }
  }
 
- const many = keys.find(key=>data.conditions[key].prefixes.length>12);
+ const many = keys.find(key=>data.conditions[key].prefixes.length>pageSize);
  if (many) {
   await tab(many).click();
   const sorted = [...data.conditions[many].prefixes].sort((a,b)=>a.localeCompare(b,'en',{numeric:true}));
   await page.locator('#prefix-sort').selectOption('prefix');
-  assert.deepEqual(await displayed(),[...sorted].reverse().slice(0,12));
+  assert.deepEqual(await displayed(),[...sorted].reverse().slice(0,pageSize));
   await page.locator('#prefix-direction').click();
-  assert.deepEqual(await displayed(),sorted.slice(0,12));
+  assert.deepEqual(await displayed(),sorted.slice(0,pageSize));
+  const viewport = page.viewportSize();
+  await page.setViewportSize({width:1499,height:1000});
+  const rowSizes = await cards.evaluateAll(nodes=>{
+   const rows = new Map();
+   for(const card of nodes){
+    const top = Math.round(card.getBoundingClientRect().top);
+    rows.set(top,(rows.get(top)??0)+1);
+   }
+   return [...rows.values()];
+  });
+  assert.deepEqual(rowSizes,[5,5,5]);
+  if(viewport)await page.setViewportSize(viewport);
   await next.click();
   const pageTwo = await displayed();
-  assert.deepEqual(pageTwo,sorted.slice(12,24));
+  assert.deepEqual(pageTwo,sorted.slice(pageSize,2*pageSize));
   await tab(many).press('ArrowRight');
   assert.equal(await tab(many).getAttribute('aria-selected'),'false');
   await tab(many).click();

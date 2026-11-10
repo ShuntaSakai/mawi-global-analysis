@@ -111,7 +111,7 @@ def test_overlap_dashboard_uses_exact_native_memberships(tmp_path):
 
     groups = [
         (('A', 'B', 'C-packet'), ['198.51.100.1/32']),
-        (('A', 'B'), [f'198.51.100.{i}/32' for i in range(2, 15)]),
+        (('A', 'B'), [f'198.51.100.{i}/32' for i in range(2, 18)]),
         (('A', 'C-packet'), ['198.51.100.20/32', '198.51.100.21/32']),
         (('B', 'C-packet'), ['198.51.100.30/32']),
         (('B', 'C-flow'), ['198.51.100.40/32']),
@@ -139,6 +139,6 @@ def test_overlap_dashboard_uses_exact_native_memberships(tmp_path):
     assert embedded['prefixes'] == payload['prefixes']
     assert embedded['curves'] == payload['curves']
     selected = {key: set(row['prefixes']) for key, row in embedded['conditions'].items()}
-    assert [len(selected[a] & selected[b]) for a, b in combinations(KEYS, 2)] == [14, 3, 0, 2, 1, 4]
+    assert [len(selected[a] & selected[b]) for a, b in combinations(KEYS, 2)] == [17, 3, 0, 2, 1, 4]
     assert embedded['prefixes']['192.0.2.0/24']['conditions'] == ['A']
     assert embedded['prefixes']['192.0.2.1/32']['conditions'] == ['C-flow']

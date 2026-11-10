@@ -14,7 +14,12 @@ __ABC_STYLE__
  #prefix-detail{grid-column:2;grid-row:1}
  .detail-open #prefix-list{grid-column:1;grid-row:1}
 }
-.prefix-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:12px}
+.prefix-cards{
+ --prefix-card-gap:12px;
+ display:grid;
+ gap:var(--prefix-card-gap);
+ grid-template-columns:repeat(auto-fit,minmax(min(100%,max(270px,calc((100% - 4 * var(--prefix-card-gap)) / 5))),1fr));
+}
 .prefix-card{display:block;text-align:left;width:100%;min-width:0;padding:14px;background:#fff;color:inherit;border:1px solid #bccfdb;border-radius:10px}
 .prefix-card[aria-expanded=true]{border-color:#126ea6;background:#eef7fd}
 .prefix-card:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #126ea6;outline-offset:2px}
