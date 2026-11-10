@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sqlite3
 
+from .dashboard import PREFIX_DASHBOARD
 from .generation import generate
 from .validation import validate_inputs,DEFAULT_RUNS
 
@@ -31,6 +32,8 @@ def main(argv=None):
             path=generate(a.root,a.dataset,a.output_dir,**kwargs,scratch_dir=a.scratch_dir,max_ecdf_points=a.max_ecdf_points,
                           target=a.target,legacy_reference=a.legacy_reference)
             result={'status':'success','manifest':str(path),'dashboard':str(path.with_name('dashboard.html'))}
+            if v2:
+                result['prefix_dashboard']=str(path.with_name(PREFIX_DASHBOARD))
     except (ValueError,OSError,sqlite3.Error) as e:p.exit(2,f'A/B/C比較を実行できません: {e}\n')
     if a.json:
         print(json.dumps(result,indent=2,ensure_ascii=False))

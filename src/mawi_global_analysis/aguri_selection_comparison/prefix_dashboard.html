@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-__DASHBOARD_SCRIPT_HASH__'; style-src 'unsafe-inline'; connect-src 'none'; img-src data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Aguri Prefix Individual CDF</title>
+<style>
+__ABC_STYLE__
+.prefix-layout{display:grid;gap:16px;align-items:start}
+.prefix-layout>*{min-width:0}
+@media(min-width:1100px){
+ .prefix-layout.detail-open{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr)}
+ #prefix-detail{grid-column:2;grid-row:1}
+ .detail-open #prefix-list{grid-column:1;grid-row:1}
+}
+.prefix-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:12px}
+.prefix-card{display:block;text-align:left;width:100%;min-width:0;padding:14px;background:#fff;color:inherit;border:1px solid #bccfdb;border-radius:10px}
+.prefix-card[aria-expanded=true]{border-color:#126ea6;background:#eef7fd}
+.prefix-card:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #126ea6;outline-offset:2px}
+.prefix-card strong{display:block;font-size:1.15rem;overflow-wrap:anywhere}
+.prefix-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}
+.prefix-metrics span{min-width:0;overflow-wrap:anywhere}
+.prefix-metrics b{display:block}
+.prefix-card svg,#prefix-chart svg{display:block;width:100%;height:auto}
+.prefix-card .caption{display:block}
+.prefix-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.prefix-toolbar label{max-width:100%}
+#prefix-search{width:min(200px,100%)}
+#prefix-detail-title,#prefix-run,#prefix-source{overflow-wrap:anywhere}
+.tooltip{max-width:min(420px,calc(100vw - 20px));overflow-wrap:anywhere}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header>
+ <div class="eyebrow">RAW · NATIVE CIDR · SRC OR DST</div>
+ <h1>Aguri Prefix Individual CDF</h1>
+ <p id="prefix-dataset"></p>
+ <p>条件ごとの選定CIDR。各CIDR内で flow_id を一意化し、1フローを1件として集計します。</p>
+</header>
+<nav role="tablist" aria-label="選定条件">__PREFIX_TABS__</nav>
+<main id="prefix-panel" role="tabpanel" aria-labelledby="prefix-tab-A">
+ <section class="panel" aria-label="一覧の表示条件">
+  <p id="prefix-run"></p>
+  <div class="prefix-toolbar">
+   <label>CIDR検索 <input type="search" id="prefix-search"></label>
+   <label>並べ替え <select id="prefix-sort">
+    <option value="flow_count">Flow count</option><option value="median">Median</option>
+    <option value="p95">P95</option><option value="one_packet_rate">1パケット率</option>
+    <option value="prefix">Prefix</option>
+   </select></label>
+   <button type="button" id="prefix-direction">降順</button>
+  </div>
+  <p class="caption" id="prefix-axis"></p>
+ </section>
+ <div class="prefix-layout" id="prefix-layout">
+  <section class="panel" id="prefix-detail" aria-labelledby="prefix-detail-title" hidden>
+   <button type="button" id="prefix-close">詳細を閉じる</button>
+   <h2 id="prefix-detail-title"></h2>
+   <div id="prefix-detail-stats"></div>
+   <p class="caption" id="prefix-source"></p>
+   <div id="prefix-chart"></div>
+  </section>
+  <section id="prefix-list" aria-label="選定Prefix一覧">
+   <div class="prefix-toolbar">
+    <button type="button" id="prefix-prev">前へ</button>
+    <span id="prefix-status" role="status"></span>
+    <button type="button" id="prefix-next">次へ</button>
+   </div>
+   <div id="prefix-cards" class="prefix-cards"></div>
+  </section>
+ </div>
+</main>
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+<footer>オフライン閲覧 · 完全度数は各条件の frequencies.csv · 来歴と成果物のハッシュは comparison_manifest.json</footer>
+<script id="dashboard-data" type="application/json">__DASHBOARD_DATA__</script>
+<script>__ABC_SCRIPT__</script>
+</body>
+</html>

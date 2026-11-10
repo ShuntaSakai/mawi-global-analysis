@@ -11,6 +11,7 @@ from mawi_global_analysis.rls_weight_comparison.generation import _entries,_publ
 from mawi_global_analysis.rls_weight_comparison.refresh import _guard_locations
 from .analysis import TARGET,analyze_inputs
 from . import prefix_ecdf
+from .dashboard import PREFIX_DASHBOARD
 from .validation import (
     CONDITIONS, CONDITIONS_V2, DEFAULT_RUNS, TWO_STAGE_BASES, _validate_inputs,
     SCHEMA as VALIDATION_SCHEMA, SCHEMA_V2 as VALIDATION_SCHEMA_V2,
@@ -55,6 +56,11 @@ def verify_manifest(path: Path) -> dict:
         if bundle_kind!='dashboard' or prefix_data!=prefix_ecdf.DESCRIPTOR:
             raise ValueError('unsupported prefix ECDF artifact descriptor')
         required=required | {prefix_ecdf.ARTIFACT}
+    prefix_page=m.get('prefix_dashboard') if v2 else None
+    if v2 and 'prefix_dashboard' in m:
+        if prefix_data is None or prefix_page!=PREFIX_DASHBOARD:
+            raise ValueError('unsupported prefix dashboard artifact descriptor')
+        required=required | {PREFIX_DASHBOARD}
     if not isinstance(m.get('artifacts'),dict) or not required.issubset(m['artifacts']):
         raise ValueError('comparison artifacts missing')
     if v2 and bundle_kind is None and 'dashboard.html' in m['artifacts']:
@@ -91,6 +97,9 @@ def verify_manifest(path: Path) -> dict:
         if (summary.get('prefix_ecdf')!=prefix_data
                 or (prefix_ecdf.ARTIFACT in m['artifacts'])!=(prefix_data is not None)):
             raise ValueError('prefix ECDF artifact binding mismatch')
+        if (summary.get('prefix_dashboard')!=prefix_page
+                or (PREFIX_DASHBOARD in m['artifacts'])!=(prefix_page is not None)):
+            raise ValueError('prefix dashboard artifact binding mismatch')
         if summary.get('bundle_kind')!=bundle_kind:
             raise ValueError('v2 bundle kind binding mismatch')
         if (summary.get('schema_version')!='aguri-selection-analysis-v2'
@@ -139,10 +148,11 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
             result['validation_sha256']=stable_json_hash(validation)
             result['bundle_kind']='dashboard'
             result['prefix_ecdf']=prefix_ecdf.DESCRIPTOR
+            result['prefix_dashboard']=PREFIX_DASHBOARD
             individual=prefix_ecdf.build_prefix_ecdf_payload(work,result,scratch_dir=scratch_dir)
             _write_text(work/prefix_ecdf.ARTIFACT,
                         json.dumps(individual,ensure_ascii=False,separators=(',',':'),allow_nan=False)+'\n')
-            del individual
+
         _write_csv(work/'focus_prefix.csv',('condition','selected','candidate_exact','candidate_covering',*STATS,'one_packet_count','in_union_flow_count','union_share'),
             [{**r,'condition':k,'candidate_covering':json.dumps(r['candidate_covering'])} for k,r in result['focus'].items()])
         records=[]
@@ -163,7 +173,8 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
             name='rls_weight_comparison/prefix_ecdf.py'
             implementation[name]=sha256_file(package/name)
         else:
-            implementation.pop('aguri_selection_comparison/prefix_ecdf.py',None)
+            for name in ('prefix_ecdf.py','prefix_dashboard.js',PREFIX_DASHBOARD):
+                implementation.pop('aguri_selection_comparison/'+name,None)
         if v2 or validation['runs']['C']['selection_details']['method']=='aguri-two-stage-packet':
             for name in ('aguri_two_stage/validation.py','aguri_two_stage/stage.py','aguri_two_stage/wire.py',
                          'agurim_prime/input.py','agurim_prime/stage.py'):
@@ -173,8 +184,14 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         payload={**result,'provenance':{'validation':validation,'implementation_sha256':implementation,
             'artifacts':_entries(work),'display':display,
             'evidence':'Saved-run comparison; synthetic fixtures are not MAWI findings. No historical reproduction without bound reference.'}}
-        from .dashboard import render
+        from .dashboard import render,render_prefix
         _write_text(work/'dashboard.html',render(payload))
+        if v2:
+            points=result['all_curves']['overall_ipv4']['points']
+            last_packet_count=points[-1]['packet_count'] if points else '1'
+            _write_text(work/PREFIX_DASHBOARD,
+                        render_prefix(individual,axis_max_packet_count=last_packet_count))
+            del individual
         final=_validate_inputs(root,dataset_id,**args)
         if final!=validation:raise ValueError('input provenance changed during comparison')
         for name,checksum in result['legacy'].get('tracked_files',{}).items():
@@ -185,6 +202,7 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         if v2:
             manifest['bundle_kind']=result['bundle_kind']
             manifest['prefix_ecdf']=result['prefix_ecdf']
+            manifest['prefix_dashboard']=PREFIX_DASHBOARD
         _write_text(work/'comparison_manifest.json',json.dumps(manifest,indent=2,sort_keys=True,allow_nan=False)+'\n')
         verify_manifest(work/'comparison_manifest.json');_new_output(root,output);_publish(work,output)
     return output/'comparison_manifest.json'

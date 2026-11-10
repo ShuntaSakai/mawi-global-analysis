@@ -65,6 +65,7 @@ def test_validate_only_and_generate_cli(four, tmp_path, capsys):
     assert main([*args, *FLAGS, '--output-dir', str(tmp_path / 'v2')]) == 0
     result = json.loads(capsys.readouterr().out)
     assert Path(result['dashboard']) == Path(result['manifest']).with_name('dashboard.html')
+    assert Path(result['prefix_dashboard']) == Path(result['manifest']).with_name('prefix_dashboard.html')
     assert verify_manifest(Path(result['manifest']))['schema_version'] == 'aguri-selection-comparison-v2'
     assert state(four) == before
 
@@ -146,6 +147,13 @@ def test_exact_v2_matches_v1_and_two_stage(four, tmp_path):
     assert {r['condition_b'] for r in summary['pairwise_prefixes'] if r['condition_a'] == 'B'} == {'C-packet', 'C-flow'}
     individual = json.loads((v2 / 'prefix_ecdf.json').read_text())
     assert individual['dataset_id'] == 'fixture'
+    prefix_html = v2 / 'prefix_dashboard.html'
+    assert manifest['artifacts']['prefix_dashboard.html']['sha256'] == sha256_file(prefix_html)
+    assert not (old / 'prefix_dashboard.html').exists()
+    embedded = json.loads(re.search(r'<script id="dashboard-data" type="application/json">(.*?)</script>',
+                                    prefix_html.read_text(), re.S)[1])
+    for key in ('conditions', 'prefixes', 'curves'):
+        assert embedded[key] == individual[key]
     assert 'prefix_ecdf.json' not in verify_manifest(old / 'comparison_manifest.json')['artifacts']
     assert set(individual['curves']) == set.union(*selected.values())
     for key in KEYS:
@@ -272,10 +280,28 @@ def test_v2_dashboard_tampering_and_legacy_data_bundle(four, tmp_path):
     save(path, missing)
     with pytest.raises(ValueError, match='artifacts missing'):
         verify_manifest(path)
+    save(path, manifest)
 
-    # Task 2 had an HTML dashboard but no individual-prefix sidecar.
+    prefix_html = path.with_name('prefix_dashboard.html')
+    original_html = prefix_html.read_bytes()
+    prefix_html.write_bytes(original_html + b'<!-- tampered -->')
+    with pytest.raises(ValueError, match='prefix_dashboard.html.*SHA-256'):
+        verify_manifest(path)
+    prefix_html.write_bytes(original_html)
+
+    # Task 3A has a sidecar but no individual-prefix HTML.
     summary = path.with_name('summary.json')
     data = json.loads(summary.read_text())
+    manifest.pop('prefix_dashboard')
+    manifest['artifacts'].pop('prefix_dashboard.html')
+    data.pop('prefix_dashboard')
+    save(summary, data)
+    manifest['artifacts']['summary.json']['sha256'] = sha256_file(summary)
+    prefix_html.unlink()
+    save(path, manifest)
+    assert verify_manifest(path) == manifest
+
+    # Task 2 had an HTML dashboard but no individual-prefix sidecar.
     manifest.pop('prefix_ecdf')
     manifest['artifacts'].pop('prefix_ecdf.json')
     data.pop('prefix_ecdf')
@@ -319,5 +345,16 @@ def test_prefix_ecdf_failure_does_not_publish(four, tmp_path, monkeypatch):
     monkeypatch.setattr(api('prefix_ecdf'), 'build_prefix_ecdf_payload', fail)
     output = tmp_path / 'failed-prefix-ecdf'
     with pytest.raises(ValueError, match='simulated prefix ECDF failure'):
+        generate(four, 'fixture', output, **RUNS)
+    assert not output.exists()
+
+
+def test_prefix_dashboard_failure_does_not_publish(four, tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise ValueError('simulated prefix dashboard render failure')
+
+    monkeypatch.setattr(api('dashboard'), 'render_prefix', fail)
+    output = tmp_path / 'failed-prefix-render'
+    with pytest.raises(ValueError, match='simulated prefix dashboard render failure'):
         generate(four, 'fixture', output, **RUNS)
     assert not output.exists()
