@@ -33,13 +33,24 @@ def build_prefix_ecdfs(base: Path, prefixes: list[dict], *, scratch_dir: Path | 
     cards={row[prefix_field]:row for row in prefixes}
     if len(cards)!=len(prefixes):
         raise ValueError('per_prefix_ecdf: duplicate prefix records')
+    display=_build_frequency_curves(base,cards,MODES,scratch_dir=scratch_dir)
+    return dict(schema_version=SCHEMA if membership_scope=='normalized_24' else 'rls-native-prefix-ecdf-v1',
+                **display,
+                exact_source=('native/' if membership_scope=='native' else '')+'modes/<mode>/frequencies.csv; unchanged full integer frequencies',
+                membership=('Each /24: canonical src OR dst, flow_id unique within /24; flows can occur in multiple /24s.' if membership_scope=='normalized_24' else 'Each native prefix: canonical src OR dst, flow_id unique within prefix; flows can occur in multiple prefixes.'),
+                encoding=('One curve per unique /24' if membership_scope=='normalized_24' else 'One curve per unique native prefix')+'; encoded_points is JSON decoded on selection only.',
+                sampling='Uniform observed-size rank, both endpoints retained; lower HV bound and next-point upper envelope.')
+
+
+def _build_frequency_curves(base: Path, cards: dict, modes: tuple[str, ...], *, scratch_dir: Path | None = None) -> dict:
+    """Check exact frequency CSVs and return one lazy display curve per selected key."""
     curves={};limit=display_limit(len(cards));point_total=0
     with tempfile.TemporaryDirectory(prefix='prefix-ecdf-',dir=scratch_dir) as temporary:
         db=sqlite3.connect(Path(temporary)/'frequencies.sqlite')
         try:
             db.execute('PRAGMA cache_size=-32768');db.execute('PRAGMA temp_store=FILE')
             db.execute('CREATE TABLE frequencies(distribution TEXT,packets INTEGER,n INTEGER, PRIMARY KEY(distribution,packets)) WITHOUT ROWID')
-            for mode in MODES:
+            for mode in modes:
                 with (Path(base)/'modes'/mode/'frequencies.csv').open(encoding='utf-8',newline='') as stream:
                     reader=csv.DictReader(stream,strict=True)
                     if reader.fieldnames!=list(FREQUENCY_COLUMNS):
@@ -49,7 +60,7 @@ def build_prefix_ecdfs(base: Path, prefixes: list[dict], *, scratch_dir: Path | 
                         if prefix in ('overall_ipv4','selected_union'):
                             continue
                         if prefix not in cards or mode not in cards[prefix]['modes']:
-                            raise ValueError(f'{mode}.{prefix}: unselected /24 frequency rows')
+                            raise ValueError(f'{mode}.{prefix}: unselected prefix frequency rows')
                         packets,n=int(row['packet_count']),int(row['frequency'])
                         if packets<=0 or n<=0:
                             raise ValueError(f'{mode}.{prefix}: positive integer frequencies required')
@@ -59,7 +70,7 @@ def build_prefix_ecdfs(base: Path, prefixes: list[dict], *, scratch_dir: Path | 
                             raise ValueError(f'{mode}.{prefix}: duplicate packet_count') from exc
             for prefix,card in cards.items():
                 selected=card['modes'];stats=card['stats']
-                if not selected or any(m not in MODES for m in selected):
+                if not selected or any(m not in modes for m in selected):
                     raise ValueError(f'{prefix}: invalid selected modes')
                 first=selected[0]+':'+prefix
                 for mode in selected:
@@ -71,23 +82,19 @@ def build_prefix_ecdfs(base: Path, prefixes: list[dict], *, scratch_dir: Path | 
                         raise ValueError(f'{mode}.{prefix}: frequencies sum {count} differs from flow_count {stats["flow_count"]}')
                     if packet_total!=int(stats['packet_total']):
                         raise ValueError(f'{mode}.{prefix}: frequency weighted total differs from packet_total')
-                    for a,b in ((first,key),(key,first)):
-                        diff=db.execute('SELECT packets,n FROM frequencies WHERE distribution=? EXCEPT SELECT packets,n FROM frequencies WHERE distribution=?',(a,b)).fetchone()
-                        if diff:
-                            raise ValueError(f'{mode}.{prefix}: exact frequencies differ between modes')
+                    if key!=first:
+                        for a,b in ((first,key),(key,first)):
+                            diff=db.execute('SELECT packets,n FROM frequencies WHERE distribution=? EXCEPT SELECT packets,n FROM frequencies WHERE distribution=?',(a,b)).fetchone()
+                            if diff:
+                                raise ValueError(f'{mode}.{prefix}: exact frequencies differ between modes')
                 curve=write_ecdf(db,{first:int(stats['flow_count'])},None,max_points=limit)[first]
                 points=curve.pop('points')
                 # Nested JSON stays a string during initial page parse; decode only
-                # the at-most-five selected prefix curves, and evict on deselection.
+                # the curves needed for the current view.
                 curve['encoded_points']=json.dumps(points,separators=(',',':'),allow_nan=False)
                 curves[prefix]=curve;point_total+=len(points)
         finally:
             db.close()
-    return dict(schema_version=SCHEMA if membership_scope=='normalized_24' else 'rls-native-prefix-ecdf-v1',prefix_count=len(cards),curves=curves,
-                max_points_per_prefix=limit,point_budget=POINT_BUDGET,
-                displayed_point_count=point_total,
-                point_upper_bound=max(POINT_BUDGET,2*len(cards)),
-                exact_source=('native/' if membership_scope=='native' else '')+'modes/<mode>/frequencies.csv; unchanged full integer frequencies',
-                membership=('Each /24: canonical src OR dst, flow_id unique within /24; flows can occur in multiple /24s.' if membership_scope=='normalized_24' else 'Each native prefix: canonical src OR dst, flow_id unique within prefix; flows can occur in multiple prefixes.'),
-                encoding=('One curve per unique /24' if membership_scope=='normalized_24' else 'One curve per unique native prefix')+'; encoded_points is JSON decoded on selection only.',
-                sampling='Uniform observed-size rank, both endpoints retained; lower HV bound and next-point upper envelope.')
+    return dict(prefix_count=len(cards),curves=curves,max_points_per_prefix=limit,
+                point_budget=POINT_BUDGET,displayed_point_count=point_total,
+                point_upper_bound=max(POINT_BUDGET,2*len(cards)))

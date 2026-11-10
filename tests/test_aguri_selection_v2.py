@@ -144,6 +144,18 @@ def test_exact_v2_matches_v1_and_two_stage(four, tmp_path):
             r for r in per_condition['B'] if r['distribution'] == prefix]
     assert len(summary['jaccard']) == 18
     assert {r['condition_b'] for r in summary['pairwise_prefixes'] if r['condition_a'] == 'B'} == {'C-packet', 'C-flow'}
+    individual = json.loads((v2 / 'prefix_ecdf.json').read_text())
+    assert individual['dataset_id'] == 'fixture'
+    assert 'prefix_ecdf.json' not in verify_manifest(old / 'comparison_manifest.json')['artifacts']
+    assert set(individual['curves']) == set.union(*selected.values())
+    for key in KEYS:
+        assert set(individual['conditions'][key]['prefixes']) == selected[key]
+        assert individual['conditions'][key]['run_name'] == manifest['selection_conditions'][key]['run_name']
+        for cidr in selected[key]:
+            curve = individual['curves'][cidr]
+            freq = [r for r in per_condition[key] if r['distribution'] == cidr]
+            assert len(freq) == curve['exact_point_count']
+            assert sum(int(r['frequency']) for r in freq) == int(curve['total_flow_count'])
     assert set(summary['sensitivities']) == {'B', 'C-packet', 'C-flow'}
     assert {r['condition'] for r in summary['prefix_contribution']} == set(KEYS)
 
@@ -249,6 +261,30 @@ def test_v2_dashboard_tampering_and_legacy_data_bundle(four, tmp_path):
         verify_manifest(path)
     html.write_bytes(original)
 
+    prefix_file = path.with_name('prefix_ecdf.json')
+    original_prefix = prefix_file.read_bytes()
+    prefix_file.write_bytes(original_prefix + b' ')
+    with pytest.raises(ValueError, match='prefix_ecdf.json.*SHA-256'):
+        verify_manifest(path)
+    prefix_file.write_bytes(original_prefix)
+    missing = json.loads(path.read_text())
+    missing['artifacts'].pop('prefix_ecdf.json')
+    save(path, missing)
+    with pytest.raises(ValueError, match='artifacts missing'):
+        verify_manifest(path)
+
+    # Task 2 had an HTML dashboard but no individual-prefix sidecar.
+    summary = path.with_name('summary.json')
+    data = json.loads(summary.read_text())
+    manifest.pop('prefix_ecdf')
+    manifest['artifacts'].pop('prefix_ecdf.json')
+    data.pop('prefix_ecdf')
+    save(summary, data)
+    manifest['artifacts']['summary.json']['sha256'] = sha256_file(summary)
+    prefix_file.unlink()
+    save(path, manifest)
+    assert verify_manifest(path) == manifest
+
     manifest.pop('bundle_kind')
     manifest['artifacts'].pop('dashboard.html')
     save(path, manifest)
@@ -256,8 +292,6 @@ def test_v2_dashboard_tampering_and_legacy_data_bundle(four, tmp_path):
         verify_manifest(path)
 
     # Task 1 v2 bundles had neither the HTML nor the bundle_kind marker.
-    summary = path.with_name('summary.json')
-    data = json.loads(summary.read_text())
     data.pop('bundle_kind')
     save(summary, data)
     html.unlink()
@@ -273,5 +307,17 @@ def test_v2_render_failure_does_not_publish(four, tmp_path, monkeypatch):
     monkeypatch.setattr(api('dashboard'), 'render', fail)
     output = tmp_path / 'failed-render'
     with pytest.raises(ValueError, match='simulated HTML render failure'):
+        generate(four, 'fixture', output, **RUNS)
+    assert not output.exists()
+
+
+
+def test_prefix_ecdf_failure_does_not_publish(four, tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise ValueError('simulated prefix ECDF failure')
+
+    monkeypatch.setattr(api('prefix_ecdf'), 'build_prefix_ecdf_payload', fail)
+    output = tmp_path / 'failed-prefix-ecdf'
+    with pytest.raises(ValueError, match='simulated prefix ECDF failure'):
         generate(four, 'fixture', output, **RUNS)
     assert not output.exists()

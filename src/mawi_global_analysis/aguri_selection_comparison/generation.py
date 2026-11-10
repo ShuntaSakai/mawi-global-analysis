@@ -10,6 +10,7 @@ from mawi_global_analysis.normalized24.statistics import _new_output
 from mawi_global_analysis.rls_weight_comparison.generation import _entries,_publish,_write_text,_write_csv,_json,STATS
 from mawi_global_analysis.rls_weight_comparison.refresh import _guard_locations
 from .analysis import TARGET,analyze_inputs
+from . import prefix_ecdf
 from .validation import (
     CONDITIONS, CONDITIONS_V2, DEFAULT_RUNS, TWO_STAGE_BASES, _validate_inputs,
     SCHEMA as VALIDATION_SCHEMA, SCHEMA_V2 as VALIDATION_SCHEMA_V2,
@@ -49,6 +50,11 @@ def verify_manifest(path: Path) -> dict:
     if v2 and 'bundle_kind' in m and bundle_kind!='dashboard':
         raise ValueError('unsupported v2 bundle kind')
     required=(REQUIRED_V2 | {'dashboard.html'} if bundle_kind=='dashboard' else REQUIRED_V2) if v2 else REQUIRED
+    prefix_data=m.get('prefix_ecdf') if v2 else None
+    if v2 and 'prefix_ecdf' in m:
+        if bundle_kind!='dashboard' or prefix_data!=prefix_ecdf.DESCRIPTOR:
+            raise ValueError('unsupported prefix ECDF artifact descriptor')
+        required=required | {prefix_ecdf.ARTIFACT}
     if not isinstance(m.get('artifacts'),dict) or not required.issubset(m['artifacts']):
         raise ValueError('comparison artifacts missing')
     if v2 and bundle_kind is None and 'dashboard.html' in m['artifacts']:
@@ -82,6 +88,9 @@ def verify_manifest(path: Path) -> dict:
     if any(m.get(key)!=summary.get(key) for key in ('dataset_id','target')):
         raise ValueError('comparison summary metadata binding mismatch')
     if v2:
+        if (summary.get('prefix_ecdf')!=prefix_data
+                or (prefix_ecdf.ARTIFACT in m['artifacts'])!=(prefix_data is not None)):
+            raise ValueError('prefix ECDF artifact binding mismatch')
         if summary.get('bundle_kind')!=bundle_kind:
             raise ValueError('v2 bundle kind binding mismatch')
         if (summary.get('schema_version')!='aguri-selection-analysis-v2'
@@ -101,6 +110,8 @@ def verify_manifest(path: Path) -> dict:
         expected=_selection_conditions(validation)
         if m.get('selection_conditions')!=expected or summary.get('selection_conditions')!=expected:
             raise ValueError('comparison selection conditions binding mismatch')
+    if prefix_data is not None:
+        prefix_ecdf.verify_prefix_ecdf_binding(_json(path.parent/prefix_ecdf.ARTIFACT),summary,validation)
     if m.get('legacy')!=_json(path.parent/'legacy_comparison.json') or m['legacy'].get('historical_reproduction_verified') is not False:
         raise ValueError('legacy evidence binding mismatch')
     return m
@@ -127,6 +138,11 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         if v2:
             result['validation_sha256']=stable_json_hash(validation)
             result['bundle_kind']='dashboard'
+            result['prefix_ecdf']=prefix_ecdf.DESCRIPTOR
+            individual=prefix_ecdf.build_prefix_ecdf_payload(work,result,scratch_dir=scratch_dir)
+            _write_text(work/prefix_ecdf.ARTIFACT,
+                        json.dumps(individual,ensure_ascii=False,separators=(',',':'),allow_nan=False)+'\n')
+            del individual
         _write_csv(work/'focus_prefix.csv',('condition','selected','candidate_exact','candidate_covering',*STATS,'one_packet_count','in_union_flow_count','union_share'),
             [{**r,'condition':k,'candidate_covering':json.dumps(r['candidate_covering'])} for k,r in result['focus'].items()])
         records=[]
@@ -143,6 +159,11 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         for name in ('normalized24/analysis.py','normalized24/statistics.py','rls_weight_comparison/native_analysis.py','rls_weight_comparison/metrics.py',
                      'rls_weight_comparison/dashboard.py','rls_weight_comparison/dashboard.html','flow_length.py','aguri.py','prefix.py','membership.py'):
             implementation[name]=sha256_file(package/name)
+        if v2:
+            name='rls_weight_comparison/prefix_ecdf.py'
+            implementation[name]=sha256_file(package/name)
+        else:
+            implementation.pop('aguri_selection_comparison/prefix_ecdf.py',None)
         if v2 or validation['runs']['C']['selection_details']['method']=='aguri-two-stage-packet':
             for name in ('aguri_two_stage/validation.py','aguri_two_stage/stage.py','aguri_two_stage/wire.py',
                          'agurim_prime/input.py','agurim_prime/stage.py'):
@@ -163,6 +184,7 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
                       display=display,interpretation=validation['interpretation'],legacy=result['legacy'])
         if v2:
             manifest['bundle_kind']=result['bundle_kind']
+            manifest['prefix_ecdf']=result['prefix_ecdf']
         _write_text(work/'comparison_manifest.json',json.dumps(manifest,indent=2,sort_keys=True,allow_nan=False)+'\n')
         verify_manifest(work/'comparison_manifest.json');_new_output(root,output);_publish(work,output)
     return output/'comparison_manifest.json'
