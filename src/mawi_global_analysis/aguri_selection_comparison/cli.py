@@ -30,14 +30,12 @@ def main(argv=None):
         else:
             path=generate(a.root,a.dataset,a.output_dir,**kwargs,scratch_dir=a.scratch_dir,max_ecdf_points=a.max_ecdf_points,
                           target=a.target,legacy_reference=a.legacy_reference)
-            result={'status':'success','manifest':str(path)}
-            if not v2:
-                result['dashboard']=str(path.with_name('dashboard.html'))
+            result={'status':'success','manifest':str(path),'dashboard':str(path.with_name('dashboard.html'))}
     except (ValueError,OSError,sqlite3.Error) as e:p.exit(2,f'A/B/C比較を実行できません: {e}\n')
     if a.json:
         print(json.dumps(result,indent=2,ensure_ascii=False))
     elif a.validate_only:
         print('Read-only four-condition validation succeeded' if v2 else 'Read-only A/B/C validation succeeded')
     else:
-        print(result['manifest' if v2 else 'dashboard'])
+        print(result['dashboard'])
     return 0

@@ -45,10 +45,13 @@ def verify_manifest(path: Path) -> dict:
         raise ValueError('unsupported/incomplete comparison manifest')
     v2=schema==SCHEMA_V2
     keys=CONDITIONS_V2 if v2 else CONDITIONS
-    required=REQUIRED_V2 if v2 else REQUIRED
+    bundle_kind=m.get('bundle_kind') if v2 else None
+    if v2 and 'bundle_kind' in m and bundle_kind!='dashboard':
+        raise ValueError('unsupported v2 bundle kind')
+    required=(REQUIRED_V2 | {'dashboard.html'} if bundle_kind=='dashboard' else REQUIRED_V2) if v2 else REQUIRED
     if not isinstance(m.get('artifacts'),dict) or not required.issubset(m['artifacts']):
         raise ValueError('comparison artifacts missing')
-    if v2 and 'dashboard.html' in m['artifacts']:
+    if v2 and bundle_kind is None and 'dashboard.html' in m['artifacts']:
         raise ValueError('v2 comparison bundle is data-only')
     validation=m.get('validation')
     if (not isinstance(validation,dict) or validation!=m.get('final_validation')
@@ -79,6 +82,8 @@ def verify_manifest(path: Path) -> dict:
     if any(m.get(key)!=summary.get(key) for key in ('dataset_id','target')):
         raise ValueError('comparison summary metadata binding mismatch')
     if v2:
+        if summary.get('bundle_kind')!=bundle_kind:
+            raise ValueError('v2 bundle kind binding mismatch')
         if (summary.get('schema_version')!='aguri-selection-analysis-v2'
                 or summary.get('validation_sha256')!=stable_json_hash(validation)
                 or set(summary.get('conditions',{}))!=set(keys)):
@@ -121,6 +126,7 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         result['selection_conditions']=_selection_conditions(validation)
         if v2:
             result['validation_sha256']=stable_json_hash(validation)
+            result['bundle_kind']='dashboard'
         _write_csv(work/'focus_prefix.csv',('condition','selected','candidate_exact','candidate_covering',*STATS,'one_packet_count','in_union_flow_count','union_share'),
             [{**r,'condition':k,'candidate_covering':json.dumps(r['candidate_covering'])} for k,r in result['focus'].items()])
         records=[]
@@ -143,12 +149,11 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
                 implementation[name]=sha256_file(package/name)
         display={'max_ecdf_points':max_ecdf_points,'statistics':'exact full frequencies; never sampled points',
                  'simplified':'retained true points; lower HV steps with next-point upper bounds'}
-        if not v2:
-            payload={**result,'provenance':{'validation':validation,'implementation_sha256':implementation,
-                'artifacts':_entries(work),'display':display,
-                'evidence':'Saved-run comparison; synthetic fixtures are not MAWI findings. No historical reproduction without bound reference.'}}
-            from .dashboard import render
-            _write_text(work/'dashboard.html',render(payload))
+        payload={**result,'provenance':{'validation':validation,'implementation_sha256':implementation,
+            'artifacts':_entries(work),'display':display,
+            'evidence':'Saved-run comparison; synthetic fixtures are not MAWI findings. No historical reproduction without bound reference.'}}
+        from .dashboard import render
+        _write_text(work/'dashboard.html',render(payload))
         final=_validate_inputs(root,dataset_id,**args)
         if final!=validation:raise ValueError('input provenance changed during comparison')
         for name,checksum in result['legacy'].get('tracked_files',{}).items():
@@ -156,6 +161,8 @@ def generate(root: Path,dataset_id: str,output_dir: Path,*,run_a=DEFAULT_RUNS['A
         manifest=dict(schema_version=SCHEMA_V2 if v2 else SCHEMA,status='success',dataset_id=dataset_id,validation=validation,final_validation=final,
                       target=target,selection_conditions=result['selection_conditions'],implementation_sha256=implementation,artifacts=_entries(work),
                       display=display,interpretation=validation['interpretation'],legacy=result['legacy'])
+        if v2:
+            manifest['bundle_kind']=result['bundle_kind']
         _write_text(work/'comparison_manifest.json',json.dumps(manifest,indent=2,sort_keys=True,allow_nan=False)+'\n')
         verify_manifest(work/'comparison_manifest.json');_new_output(root,output);_publish(work,output)
     return output/'comparison_manifest.json'

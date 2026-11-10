@@ -64,7 +64,7 @@ def test_validate_only_and_generate_cli(four, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)['schema_version'] == 'aguri-selection-validation-v1'
     assert main([*args, *FLAGS, '--output-dir', str(tmp_path / 'v2')]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert 'dashboard' not in result
+    assert Path(result['dashboard']) == Path(result['manifest']).with_name('dashboard.html')
     assert verify_manifest(Path(result['manifest']))['schema_version'] == 'aguri-selection-comparison-v2'
     assert state(four) == before
 
@@ -97,7 +97,10 @@ def test_exact_v2_matches_v1_and_two_stage(four, tmp_path):
     manifest = verify_manifest(v2 / 'comparison_manifest.json')
     assert verify_manifest(old / 'comparison_manifest.json')['schema_version'] == 'aguri-selection-comparison-v1'
     assert (old / 'dashboard.html').is_file()
-    assert not (v2 / 'dashboard.html').exists()
+    html = v2 / 'dashboard.html'
+    assert manifest['bundle_kind'] == 'dashboard'
+    assert manifest['artifacts']['dashboard.html']['sha256'] == sha256_file(html)
+    assert 'id="tab-contribution"' not in html.read_text()
     assert manifest['schema_version'] == 'aguri-selection-comparison-v2'
     assert manifest['selection_conditions']['C-flow']['details']['basis'] == 'flow'
     old_summary = json.loads((old / 'summary.json').read_text())
@@ -234,3 +237,41 @@ def test_empty_v2_and_manifest_binding(tmp_path, two_build):
     save(path, manifest)
     with pytest.raises(ValueError, match='binding'):
         verify_manifest(path)
+
+
+def test_v2_dashboard_tampering_and_legacy_data_bundle(four, tmp_path):
+    path = generate(four, 'fixture', tmp_path / 'bundle', **RUNS)
+    manifest = verify_manifest(path)
+    html = path.with_name('dashboard.html')
+    original = html.read_bytes()
+    html.write_bytes(original + b'<!-- changed -->')
+    with pytest.raises(ValueError, match='dashboard.html.*SHA-256'):
+        verify_manifest(path)
+    html.write_bytes(original)
+
+    manifest.pop('bundle_kind')
+    manifest['artifacts'].pop('dashboard.html')
+    save(path, manifest)
+    with pytest.raises(ValueError, match='bundle kind'):
+        verify_manifest(path)
+
+    # Task 1 v2 bundles had neither the HTML nor the bundle_kind marker.
+    summary = path.with_name('summary.json')
+    data = json.loads(summary.read_text())
+    data.pop('bundle_kind')
+    save(summary, data)
+    html.unlink()
+    manifest['artifacts']['summary.json']['sha256'] = sha256_file(summary)
+    save(path, manifest)
+    assert verify_manifest(path) == manifest
+
+
+def test_v2_render_failure_does_not_publish(four, tmp_path, monkeypatch):
+    def fail(_payload):
+        raise ValueError('simulated HTML render failure')
+
+    monkeypatch.setattr(api('dashboard'), 'render', fail)
+    output = tmp_path / 'failed-render'
+    with pytest.raises(ValueError, match='simulated HTML render failure'):
+        generate(four, 'fixture', output, **RUNS)
+    assert not output.exists()
