@@ -1,8 +1,39 @@
-# 旧Aguri BPF条件とcanonical packet選定のA/B/C比較
+# Aguri Selection Comparison
 
 保存済みrunのみを読み、同じcanonical IPv4 TCP/UDP・Raw・native src OR dst・
 flow_id一意unionで評価する。PCAP解析、canonical生成、Aguri3/Agurim/Agurim′実行はしない。
 既存normalized/nativeダッシュボードは変更せず、専用の新規bundleへ出力する。
+
+## 推奨フロー（4条件のv2）
+
+1. 同一データセットのA（`baseline`）とB（`agurim-ipv4-tcp-udp`）の保存済みrunを用意する。
+2. 同じcanonical入力とbuildで [Two-stage packet／flow の選定run](aguri-two-stage.md#実行保存canonicalから3つのrunを新規作成) を用意する。
+   両段1%、heuristics=0、その他の設定は両runで一致させる。
+3. 解析rootで次を実行する。事前確認には `--output-dir ...` の代わりに `--validate-only` を使う。
+   v2 の事前検証は一時SQLiteでmembershipも照合する。必要に応じて `--scratch-dir` で既存の作業領域を指定する。
+
+```sh
+uv run python -m mawi_global_analysis.aguri_selection_comparison \
+  --root "$PWD" --dataset 202604081400 \
+  --run-c-packet canonical-2stage-packet-t1-h0 \
+  --run-c-flow canonical-2stage-flow-t1-h0 \
+  --output-dir /absolute/path/new-aguri-comparison --json
+```
+
+4. `dashboard.html` で、Overall と4条件の native union ECDF、選定差分、来歴を確認する。
+5. [`prefix_dashboard.html`](aguri-prefix-individual-cdf.md) で、4条件の選定CIDRごとのECDFを確認する。
+
+出力先は未作成のディレクトリを指定する。JSON応答の `manifest`、`dashboard`、
+`prefix_dashboard` にそれぞれのファイルパスが入る。
+新規生成する `aguri-selection-comparison-v2` の完了manifestは、両HTML、`prefix_ecdf.json`、
+`summary.json`、`ecdf_counts.csv` と条件別 `modes/<条件>/frequencies.csv` などを検証する。
+C-packet／C-flow は選定基準の違い。ECDFはどちらも1フローを1標本とする `packet_count` 分布。
+byteやnative／normalized /24の比較データは [Two-stage compare](aguri-two-stage.md#比較検証) で出力できる。
+
+## 互換フロー（3条件のv1）
+
+以下のA/B/C実行例と出力表はv1向け。`--run-c-packet` と `--run-c-flow` の両方を指定するとv2になり、
+`--run-c` との併用はエラーになる。
 
 | 条件 | 既定run | 選定入力 |
 | --- | --- | --- |

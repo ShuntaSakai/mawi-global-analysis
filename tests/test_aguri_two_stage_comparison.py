@@ -3,6 +3,7 @@ import importlib
 import json
 from pathlib import Path
 import csv
+from mawi_global_analysis.hashing import sha256_file
 import pytest
 from test_aguri_two_stage_pipeline import runs,canonical,compiled_two,state
 
@@ -24,7 +25,9 @@ def test_dedicated_bundle_exact_native_ecdfs_and_hashes(runs,tmp_path,monkeypatc
     monkeypatch.setattr(subprocess,'run',forbidden)
     path=api().generate_comparison(root,'fixture',packet_run='two-packet',byte_run='two-byte',flow_run='two-flow',output_dir=tmp_path/'bundle',chunksize=1,max_ecdf_points=2)
     manifest=api().verify_manifest(path)
-    assert manifest['schema_version']=='aguri-two-stage-comparison-v1'
+    assert manifest['schema_version']=='aguri-two-stage-comparison-v2'
+    assert 'dashboard.html' not in manifest['artifacts']
+    assert not (path.parent/'dashboard.html').exists()
     after=state(root)
     assert all(after.get(k)==v for k,v in before.items())
     result=json.loads((path.parent/'summary.json').read_text())
@@ -37,9 +40,13 @@ def test_dedicated_bundle_exact_native_ecdfs_and_hashes(runs,tmp_path,monkeypatc
             if key is None:key=card['key']
             counts=[r for r in rows if r['distribution']==key]
             assert sum(int(r['frequency']) for r in counts)==card['stats']['flow_count']
-    html=(path.parent/'dashboard.html').read_text()
-    assert 'Aguri3 → Agurim' in html and 'threshold 1% · -D -D (heuristics 2)' not in html
-    assert 'https://cdn' not in html and 'encoded_points' in html
+    for filename in ('ecdf_counts.csv','native_ecdf_counts.csv','scope_ecdf_counts.csv'):
+        with (path.parent/filename).open() as stream:
+            distributions={r['distribution'] for r in csv.DictReader(stream)}
+        assert 'byte' in distributions
+        if filename=='scope_ecdf_counts.csv':
+            assert 'normalized_byte' in distributions
+    assert all((path.parent/f'{scope}modes/byte/frequencies.csv').is_file() for scope in ('','native/'))
     other=api().generate_comparison(root,'fixture',packet_run='two-packet',byte_run='two-byte',flow_run='two-flow',output_dir=tmp_path/'other-bundle',chunksize=4,max_ecdf_points=2000)
     for name in manifest['artifacts']:
         if name.endswith('.csv'):assert (path.parent/name).read_bytes()==(other.parent/name).read_bytes()
@@ -58,7 +65,7 @@ def test_validation_cli_has_no_output_side_effects(runs):
     assert json.loads(result.stdout)['status']=='valid' and state(root)==before
 
 
-def test_empty_canonical_comparison_retains_nulls_and_offline_html(canonical,compiled_two,tmp_path):
+def test_empty_canonical_comparison_retains_nulls(canonical,compiled_two,tmp_path):
     from mawi_global_analysis.aguri_two_stage import run_two_stage
     root,flows=canonical;build,_=compiled_two
     flows.write_text(flows.read_text().splitlines()[0]+'\n')
@@ -80,3 +87,76 @@ def test_completed_manifest_run_names_are_bound_to_hashed_summary(runs,tmp_path)
     path=api().generate_comparison(root,'fixture',packet_run='two-packet',byte_run='two-byte',flow_run='two-flow',output_dir=tmp_path/'bound-bundle')
     m=json.loads(path.read_text());m['validation']['runs']['packet']['run_name']='wrong-run';m['final_validation']['runs']['packet']['run_name']='wrong-run';path.write_text(json.dumps(m))
     with pytest.raises(ValueError,match='binding'):api().verify_manifest(path)
+
+
+def test_data_export_cli_and_legacy_html_verification(runs,tmp_path):
+    from mawi_global_analysis.aguri_two_stage.cli import main
+    import contextlib
+    import io
+    root,_,_,_=runs
+    output=tmp_path/'bundle'
+    stdout=io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        assert main(['compare','--root',str(root),'--dataset','fixture',
+                     '--packet-run','two-packet','--byte-run','two-byte','--flow-run','two-flow',
+                     '--output-dir',str(output),'--json'])==0
+    reply=json.loads(stdout.getvalue())
+    assert reply['status']=='success' and 'dashboard' not in reply
+    path=Path(reply['manifest'])
+    assert path==output/'comparison_manifest.json'
+    for name in ('summary.json','native_ecdf_counts.csv','ecdf_counts.csv','scope_comparison.csv','scope_ecdf_counts.csv'):
+        assert Path(reply['artifacts'][name])==output/name
+        assert (output/name).is_file()
+
+    manifest=api().verify_manifest(path)
+    csv_name='scope_comparison.csv'
+    counts=manifest['artifacts'][csv_name]
+    counts['row_count']+=1
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match='scope_comparison.csv.*schema/count'):
+        api().verify_manifest(path)
+    counts['row_count']-=1
+    summary=output/'native/modes/byte/summary.json'
+    original=summary.read_bytes()
+    summary.write_text('[]')
+    metadata=manifest['artifacts']['native/modes/byte/summary.json']
+    metadata['sha256']=sha256_file(summary)
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match='expected a JSON object'):
+        api().verify_manifest(path)
+    summary.write_bytes(original)
+    metadata['sha256']=sha256_file(summary)
+    html=output/'dashboard.html'
+    html.write_text('<!doctype html><title>Archived two-stage dashboard</title>')
+    manifest['artifacts']['dashboard.html']={'sha256':sha256_file(html),'record_count':1}
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match='data-only'):
+        api().verify_manifest(path)
+    manifest['schema_version']='aguri-two-stage-comparison-v1'
+    path.write_text(json.dumps(manifest))
+    assert api().verify_manifest(path)==manifest
+    html.write_text('changed')
+    with pytest.raises(ValueError,match='dashboard.html.*SHA-256'):
+        api().verify_manifest(path)
+
+
+def test_validation_failure_never_publishes_data_bundle(runs,tmp_path,monkeypatch):
+    root,_,_,_=runs
+    module=api()
+    validate=module.validate_runs
+    first=True
+
+    def validate_changed(*args,**kwargs):
+        nonlocal first
+        record=validate(*args,**kwargs)
+        if not first:
+            record['input_changed']=True
+        first=False
+        return record
+
+    monkeypatch.setattr(module,'validate_runs',validate_changed)
+    output=tmp_path/'failed'
+    with pytest.raises(ValueError,match='inputs changed'):
+        module.generate_comparison(root,'fixture',packet_run='two-packet',byte_run='two-byte',
+                                   flow_run='two-flow',output_dir=output)
+    assert not output.exists()

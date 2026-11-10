@@ -90,6 +90,10 @@ heuristics1/2は別条件。3mode比較はthreshold1を要求し、他設定は3
 
 ## 比較・検証
 
+`aguri_two_stage compare` は、保存済みpacket／byte／flow runから正確なCSV／JSONを生成する。
+比較画面は [Aguri Selection Comparison v2](aguri-selection-comparison.md#推奨フロー4条件のv2) で生成する。
+Two-stageの `run` は引き続き選定runの作成に使う。
+
 ```sh
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m mawi_global_analysis.aguri_two_stage compare \
   --root /analysis-root --dataset 202604081400 \
@@ -104,7 +108,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m mawi_global_analysis.aguri_two_sta
   --byte-run canonical-2stage-byte-t1-h0 \
   --flow-run canonical-2stage-flow-t1-h0 \
   --output-dir /new-exports/canonical-two-stage \
-  --scratch-dir /existing-scratch --chunksize 100000 --max-ecdf-points 2000
+  --scratch-dir /existing-scratch --chunksize 100000 --json
 
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m mawi_global_analysis.aguri_two_stage verify \
   /new-exports/canonical-two-stage/comparison_manifest.json --json
@@ -168,15 +172,12 @@ flow residualは中間record件数でもnative内の実所属flow数でもない
 - 新経路のcounter加減算と閾値表現範囲を検査し、wrapを失敗とする。旧丸め規約は保持する。
   56byte入力の1行packet/byte uint32上限を超える場合は分割せず拒否する。
 
-## 比較bundleとHTML
+## データ専用の比較バンドル
 
-新schema=`aguri-two-stage-comparison-v1`、run=`aguri-two-stage-run-v1`、
+新schema=`aguri-two-stage-comparison-v2`、run=`aguri-two-stage-run-v1`、
 cache=`aguri-two-stage-cache-v1`、validation=`aguri-two-stage-validation-v1`。
 直接版のvalidatorを無効化して受理させることはしない。
 
-- `dashboard.html`：既存native UIを再利用。Overall+3mode ECDF、表・検索・個別prefix複数ECDF、
-  同じ選定集合のnative/normalized24 Scope Comparison、来歴、SVG保存。
-  両段thresholdと実際のheuristicsを表示し、直接版の`-D -D`固定表示を継承しない。
 - `summary.json`：全体/各prefix/各modeの正確な統計・coverage・KS・Jaccard・scope比較。
 - `native_selection_summary.csv`、`native_prefix_stats.csv`、`native_pairwise_jaccard.csv`。
 - `native_ecdf_counts.csv`：native Overall/3mode全整数度数と正確な累積数。
@@ -184,11 +185,13 @@ cache=`aguri-two-stage-cache-v1`、validation=`aguri-two-stage-validation-v1`。
 - `scope_comparison.csv`、`scope_ecdf_counts.csv`：固定選定集合の粒度比較と全度数。
 - `modes/<mode>/{summary.json,frequencies.csv}`：normalized24共通集計。
 - `native/modes/<mode>/{summary.json,frequencies.csv}`：native共通集計。
-- `comparison_manifest.json`：全21成果物のhash/schema/件数、前後validation、実装hash。最後に公開。
+- `comparison_manifest.json`：全20データ成果物のhash/schema/件数、前後validation、実装hash。最後に公開。
 
-HTMLは単一・offline・CDN非依存。個別prefixは最大5個、選択時に表示点をdecode。
-元度数は全保存し、表示上限/簡略化はexact統計とKSに影響しない。
-簡略化時は真の保存点・下界階段・上界帯・誤差上限を示す。
+成功時のJSON応答は `status`、`manifest`（旧キー `comparison_manifest` も同じパス）、
+主要CSV／JSONのパスを持つ `artifacts` を返す。新規出力はデータ専用でHTMLを含まない。
+旧 `aguri-two-stage-comparison-v1` のバンドルは、既存 `dashboard.html` のSHA-256を含めて
+`verify` で検証できる。保存済みバンドルの更新は不要。
+`--max-ecdf-points` は従来の呼び出しとの互換のため受け付ける。完全度数・統計・KSには影響しない。
 各native・unionともcanonical src OR dst、flow_id一意。別prefix間には共有flowがあり得る。
 統計/分位点の規約は既存normalized24と同じ。空集合mean/median/p95/率とゼロ分母はnull。
 

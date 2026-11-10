@@ -1,4 +1,4 @@
-"""Dedicated two-stage comparison; exact shared aggregators and native UI reused."""
+"""Dedicated two-stage comparison; exact shared aggregators and immutable data exports."""
 from __future__ import annotations
 import csv
 import json
@@ -13,19 +13,25 @@ from mawi_global_analysis.normalized24.statistics import _new_output
 from mawi_global_analysis.rls_weight_comparison.generation import (_entries,_publish,_write_text,_write_csv,_json,STATS,_load_frequencies,_same_overall)
 from mawi_global_analysis.rls_weight_comparison.metrics import write_ecdf
 from mawi_global_analysis.rls_weight_comparison.native_analysis import analyze_native_runs
-from mawi_global_analysis.rls_weight_comparison.native_dashboard import render_native_dashboard
 from mawi_global_analysis.rls_weight_comparison.refresh import _guard_locations
 from .validation import validate_runs,SCHEMA as VALIDATION_SCHEMA
 from .stage import MODES
 
-SCHEMA='aguri-two-stage-comparison-v1'
-REQUIRED={'dashboard.html','summary.json','ecdf_counts.csv','native_selection_summary.csv','native_prefix_stats.csv','native_pairwise_jaccard.csv',
+LEGACY_SCHEMA='aguri-two-stage-comparison-v1'
+SCHEMA='aguri-two-stage-comparison-v2'
+REQUIRED={'summary.json','ecdf_counts.csv','native_selection_summary.csv','native_prefix_stats.csv','native_pairwise_jaccard.csv',
           'native_ecdf_counts.csv','scope_comparison.csv','scope_ecdf_counts.csv',
           *(f'{prefix}modes/{mode}/{name}' for prefix in ('','native/') for mode in MODES for name in ('summary.json','frequencies.csv'))}
 
 def verify_manifest(path):
     path=Path(path).expanduser().resolve();m=_json(path);entries=m.get('artifacts')
-    if m.get('schema_version')!=SCHEMA or m.get('status')!='success' or not isinstance(entries,dict) or not REQUIRED.issubset(entries):raise ValueError('incomplete two-stage comparison manifest')
+    schema=m.get('schema_version')
+    required=REQUIRED | {'dashboard.html'} if schema==LEGACY_SCHEMA else REQUIRED
+    if (schema not in (LEGACY_SCHEMA,SCHEMA) or m.get('status')!='success'
+            or not isinstance(entries,dict) or not required.issubset(entries)):
+        raise ValueError('incomplete two-stage comparison manifest')
+    if schema==SCHEMA and any(Path(name).suffix not in ('.csv','.json') for name in entries):
+        raise ValueError('two-stage comparison v2 is data-only')
     v=m.get('validation')
     if (not isinstance(v,dict) or v!=m.get('final_validation') or v.get('schema_version')!=VALIDATION_SCHEMA
             or v.get('status')!='valid' or v.get('dataset_id')!=m.get('dataset_id') or set(v.get('runs',{}))!=set(MODES)):
@@ -34,19 +40,18 @@ def verify_manifest(path):
         rel=Path(name);file=(path.parent/rel).resolve()
         if not name or rel.is_absolute() or '..' in rel.parts or '\\' in name or rel.as_posix()!=name or not file.is_relative_to(path.parent):raise ValueError('unsafe artifact path')
         if not isinstance(e,dict) or sha256_file(file)!=e.get('sha256'):raise ValueError(name+': SHA-256 mismatch')
-        if file.suffix=='.csv':
-            with file.open(newline='') as stream:
+        if rel.suffix=='.csv':
+            with file.open(encoding='utf-8',newline='') as stream:
                 r=csv.reader(stream,strict=True)
                 if next(r,None)!=e.get('columns') or sum(1 for _ in r)!=e.get('row_count'):raise ValueError(name+': schema/count mismatch')
+        elif schema==SCHEMA:
+            if type(e.get('record_count')) is not int or e['record_count']!=1:
+                raise ValueError(name+': JSON record_count mismatch')
+            _json(file)
     summary=_json(path.parent/'summary.json')
     if (summary.get('dataset_id')!=m['dataset_id'] or summary.get('conditions')!=v.get('common')
             or summary.get('runs')!=v['runs']):raise ValueError('summary condition binding mismatch')
     return m
-
-def _template(template):
-    template=template.replace('RLS Weight Comparison · Native','Canonical Aguri · Two-stage weights')
-    template=template.replace("condition('RLS / heuristics','threshold 1% · -D -D (heuristics 2)');", "condition('Aguri3 → Agurim','threshold 1% · heuristics '+display(object(object(data.conditions).settings).heuristics));")
-    return template
 
 def generate_comparison(root,dataset_id,*,packet_run,byte_run,flow_run,output_dir,chunksize=100000,scratch_dir=None,max_ecdf_points=2000):
     root=Path(root).expanduser().resolve();output=Path(output_dir).expanduser()
@@ -88,12 +93,8 @@ def generate_comparison(root,dataset_id,*,packet_run,byte_run,flow_run,output_di
         package=Path(__file__).resolve().parents[1]
         implementation={str(p.relative_to(package)):sha256_file(p) for p in Path(__file__).parent.iterdir() if p.is_file() and p.suffix=='.py'}
         for name in ('normalized24/analysis.py','normalized24/statistics.py','rls_weight_comparison/native_analysis.py','rls_weight_comparison/metrics.py',
-                     'rls_weight_comparison/prefix_ecdf.py','rls_weight_comparison/native_dashboard.py','rls_weight_comparison/dashboard.py','rls_weight_comparison/dashboard.html','rls_weight_comparison/native_scope.js','rls_weight_comparison/native_scope.html'):
+                     'rls_weight_comparison/prefix_ecdf.py'):
             implementation[name]=sha256_file(package/name)
-        result['provenance']=dict(validation=validation,inputs={mode:data[mode]['provenance']['inputs'] for mode in MODES},implementation=implementation,
-            schemas={'comparison':SCHEMA,'wire':'aguri-weight-wire-v1'},display={'max_ecdf_points':max_ecdf_points},
-            native_extension={'membership_scope':'native','union_deduplication':'flow_id','selection_fixed':True,'two_stage':True},artifacts=_entries(work))
-        _write_text(work/'dashboard.html',render_native_dashboard(result,template_transform=_template))
         final=validate_runs(root,dataset_id,**runs,chunksize=chunksize)
         if final!=validation:raise ValueError('two-stage inputs changed during comparison')
         m=dict(schema_version=SCHEMA,status='success',dataset_id=dataset_id,validation=validation,final_validation=final,implementation_sha256=implementation,artifacts=_entries(work))

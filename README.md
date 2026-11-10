@@ -56,6 +56,16 @@ make -C vendor/agurim/src
 
 AI エージェント向けの参照順と研究契約は [docs/agent/](docs/agent/README.md) にあります。
 
+## Aguri選定比較ダッシュボード
+
+A/B の保存済みrunと、同じcanonical入力から生成したTwo-stageのpacket／flow runを使い、
+[Aguri Selection Comparison v2](docs/guide/aguri-selection-comparison.md#推奨フロー4条件のv2) を生成します。
+`dashboard.html` で4条件の全体分布を、`prefix_dashboard.html` で
+[選定PrefixごとのCDF](docs/guide/aguri-prefix-individual-cdf.md) を確認できます。
+
+[Two-stage compare](docs/guide/aguri-two-stage.md#比較検証) は、byteを含む3重みの比較や、
+native／normalized /24 の比較をCSV／JSONに保存するためのコマンドです。既存のHTML付き成果物は引き続き検証できます。
+
 ## プレフィックス分布ダッシュボード
 
 保存済みflow-lengthキャッシュから、オフラインで閲覧できる単体HTMLを生成できます。
