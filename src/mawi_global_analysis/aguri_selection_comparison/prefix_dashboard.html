@@ -26,6 +26,10 @@ __ABC_STYLE__
 .prefix-card .caption{display:block}
 .prefix-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .prefix-toolbar label{max-width:100%}
+#prefix-overlap-filters{margin-top:10px}
+#prefix-overlap-filters button[aria-pressed=true]{background:#e6f3fb;border-color:#126ea6;color:#12486a;font-weight:700}
+.prefix-common{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:4px;font-size:.8rem;color:#45637a}
+.prefix-common-label{border-radius:4px;padding:1px 6px;background:#e6f3fb;color:#12486a}
 #prefix-search{width:min(200px,100%)}
 #prefix-detail-title,#prefix-run,#prefix-source{overflow-wrap:anywhere}
 .tooltip{max-width:min(420px,calc(100vw - 20px));overflow-wrap:anywhere}
@@ -52,6 +56,8 @@ __ABC_STYLE__
    </select></label>
    <button type="button" id="prefix-direction">降順</button>
   </div>
+  <div class="prefix-toolbar" id="prefix-overlap-filters" role="group" aria-label="共通Prefixフィルター" aria-describedby="prefix-overlap-note"></div>
+  <p class="caption" id="prefix-overlap-note">共通判定はnative CIDRの完全一致。件数はCIDR検索前の値です。</p>
   <p class="caption" id="prefix-axis"></p>
  </section>
  <div class="prefix-layout" id="prefix-layout">

@@ -4,8 +4,9 @@
  const data = JSON.parse($('dashboard-data').textContent);
  const pageSize = 12;
  const tabs = Array.from(document.querySelectorAll('[role=tab]'));
+ const keys = tabs.map(tab => tab.dataset.condition);
  const states = new Map(tabs.map(tab => [tab.dataset.condition, {
-  query: '', sort: 'flow_count', ascending: false, page: 0, scroll: 0, results: null,
+  query: '', overlap: 'all', overlapCounts: null, sort: 'flow_count', ascending: false, page: 0, scroll: 0, results: null,
  }]));
  const decoded = new Map();
  const maxLog = Math.max(1, logInt(data.axis_max_packet_count));
@@ -97,7 +98,11 @@
   const curve = curveFor(cidr);
   const note = !curve.displayed_point_count ? '0フロー · 空分布' : curve.simplified ?
    '縮約 · 階段は下界、帯は上界 · 最大幅 '+num(curve.error_bound) : '全ECDF点';
-  card.append(el('strong', cidr), metrics(cidr, cardFields), thumbnail(curve), el('span', note, 'caption'));
+  const peers = keys.filter(key => key !== active && data.prefixes[cidr].conditions.includes(key));
+  const common = el('span', peers.length ? '共通' : 'この条件のみ', 'prefix-common');
+  for (const key of peers) common.append(el('span', key, 'prefix-common-label'));
+  card.setAttribute('aria-description', peers.length ? peers.join('、')+'と共通' : 'この条件のみ');
+  card.append(el('strong', cidr), common, metrics(cidr, cardFields), thumbnail(curve), el('span', note, 'caption'));
   card.addEventListener('click', () => showDetail(cidr, card));
   return card;
  }
@@ -106,7 +111,12 @@
   const query = state.query.trim().toLowerCase();
   const order = state.ascending ? 1 : -1;
   const stat = state.sort;
-  return data.conditions[active].prefixes.filter(cidr => cidr.includes(query)).sort((a, b) => {
+  return data.conditions[active].prefixes.filter(cidr => {
+   if (!cidr.includes(query)) return false;
+   const selected = data.prefixes[cidr].conditions;
+   return state.overlap === 'all' ||
+    (state.overlap === 'only' ? selected.length === 1 : selected.includes(state.overlap));
+  }).sort((a, b) => {
    const byPrefix = a.localeCompare(b, 'en', {numeric:true});
    if (stat === 'prefix') return order*byPrefix;
    const av = data.prefixes[a].stats[stat], bv = data.prefixes[b].stats[stat];
@@ -114,6 +124,37 @@
    const [x, y] = stat === 'flow_count' ? [BigInt(av), BigInt(bv)] : [Number(av), Number(bv)];
    return x === y ? byPrefix : order*(x > y ? 1 : -1);
   });
+ }
+
+ function overlapCounts() {
+  const counts = Object.fromEntries(keys.map(key => [key, 0]));
+  counts.only = 0;
+  for (const cidr of data.conditions[active].prefixes) {
+   const selected = data.prefixes[cidr].conditions;
+   if (selected.length === 1) counts.only++;
+   for (const key of selected) counts[key]++;
+  }
+  return counts;
+ }
+
+ function renderOverlapFilters(state) {
+  const group = $('prefix-overlap-filters');
+  const counts = state.overlapCounts ??= overlapCounts();
+  const options = [['all', 'すべて'], ['only', 'この条件のみ'],
+   ...keys.filter(key => key !== active).map(key => [key, key+'と共通（'+integer(counts[key])+'件）'])];
+  group.replaceChildren(...options.map(([key, label]) => {
+   const button = el('button', label);
+   button.type = 'button';
+   button.dataset.prefixFilter = key;
+   button.setAttribute('aria-pressed', String(state.overlap === key));
+   button.addEventListener('click', () => {
+    if (state.overlap === key) return;
+    group.querySelector('[aria-pressed=true]').setAttribute('aria-pressed', 'false');
+    button.setAttribute('aria-pressed', 'true');
+    updateSettings({overlap:key});
+   });
+   return button;
+  }));
  }
 
  function renderPage() {
@@ -124,7 +165,12 @@
   const pages = Math.max(1, Math.ceil(results.length/pageSize));
   state.page = Math.min(state.page, pages-1);
   const cards = results.slice(state.page*pageSize, (state.page+1)*pageSize).map(makeCard);
-  $('prefix-cards').replaceChildren(...(cards.length ? cards : [el('p', '該当する選定Prefixがありません。')]));
+  let emptyMessage = '該当する選定Prefixがありません。';
+  if (state.overlapCounts[state.overlap] === 0) {
+   emptyMessage = state.overlap === 'only' ? 'この条件のみで選定されたPrefixはありません。' :
+    state.overlap+'と共通の選定Prefixはありません。';
+  }
+  $('prefix-cards').replaceChildren(...(cards.length ? cards : [el('p', emptyMessage)]));
   $('prefix-status').textContent = integer(results.length)+'件 · ページ '+(state.page+1)+' / '+pages;
   $('prefix-prev').disabled = state.page === 0;
   $('prefix-next').disabled = state.page+1 >= pages;
@@ -147,6 +193,7 @@
   $('prefix-direction').textContent = state.ascending ? '昇順' : '降順';
   const condition = data.conditions[active];
   $('prefix-run').textContent = active+' · '+condition.run_name+' · '+(condition.details?.description ?? condition.selection_input ?? '—');
+  renderOverlapFilters(state);
   renderPage();
   window.scrollTo(0, state.scroll);
  }

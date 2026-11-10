@@ -4,6 +4,100 @@ const {readFile} = require('node:fs/promises');
 const {resolve} = require('node:path');
 const {pathToFileURL} = require('node:url');
 
+async function testOverlapFilters(page, data, keys) {
+ await page.reload();
+ const group = page.locator('#prefix-overlap-filters');
+ const buttons = group.getByRole('button');
+ const filter = key => group.locator('[data-prefix-filter="'+key+'"]');
+ const tab = key => page.getByRole('tab',{name:key,exact:true});
+ const cards = page.locator('.prefix-card');
+ const search = page.locator('#prefix-search');
+ const next = page.locator('#prefix-next');
+ const status = page.locator('#prefix-status');
+ const selected = Object.fromEntries(keys.map(key=>[key,new Set(data.conditions[key].prefixes)]));
+ const saved = new Map();
+ const pairs = new Set();
+ let zeroPair = false;
+ let searchIntersection = false;
+ let pageReset = false;
+
+ for (const key of keys) {
+  await tab(key).click();
+  assert.equal(await buttons.count(),5);
+  assert.equal(await filter('all').getAttribute('aria-pressed'),'true');
+  assert.equal(await filter(key).count(),0);
+  const peers = keys.filter(other=>other!==key);
+  const sort = page.locator('#prefix-sort');
+  await sort.selectOption('prefix');
+  for (const choice of ['all','only',...peers]) {
+   const expected = [...selected[key]].filter(cidr=>choice==='all' ||
+    (choice==='only' ? peers.every(peer=>!selected[peer].has(cidr)) : selected[choice].has(cidr)));
+   const name = choice==='all' ? 'すべて' : choice==='only' ? 'この条件のみ' : choice+'と共通（'+expected.length.toLocaleString('en-US')+'件）';
+   assert.equal(await filter(choice).textContent(),name);
+   if (peers.includes(choice)) pairs.add([key,choice].sort().join('/'));
+   await filter(choice).click();
+   assert.equal(await group.locator('[aria-pressed=true]').count(),1);
+   assert.equal(await filter(choice).getAttribute('aria-pressed'),'true');
+   assert.match(await status.textContent(),/ページ 1 \/ /);
+   assert.equal(await sort.inputValue(),'prefix');
+   const seen=[];
+   while (true) {
+    const pageCards=await cards.evaluateAll(nodes=>nodes.map(node=>[
+     node.dataset.prefix,[...node.querySelectorAll('.prefix-common-label')].map(label=>label.textContent),
+    ]));
+    for(const [cidr,labels] of pageCards){
+     seen.push(cidr);
+     assert.deepEqual(labels,peers.filter(peer=>selected[peer].has(cidr)));
+    }
+    if(await next.isDisabled())break;
+    await next.click();
+   }
+   assert.deepEqual(seen.sort(),expected.sort());
+   if (peers.includes(choice) && expected.length===0) {
+    zeroPair=true;
+    assert.match(await page.locator('#prefix-cards').innerText(),new RegExp(choice+'と共通'));
+   }
+  }
+
+  const multiPagePeer = peers.find(other=>[...selected[key]].filter(cidr=>selected[other].has(cidr)).length>12);
+  if (multiPagePeer) {
+   await filter('all').click();
+   await next.click();
+   assert.match(await status.textContent(),/ページ 2 \/ /);
+   await filter(multiPagePeer).click();
+   assert.match(await status.textContent(),/ページ 1 \/ /);
+   pageReset=true;
+  }
+  const peer = peers.find(other=>[...selected[key]].some(cidr=>selected[other].has(cidr)));
+  const choice = peer ?? 'only';
+  await filter(choice).click();
+  let query = '';
+  if (peer) {
+   const match=[...selected[key]].find(cidr=>selected[peer].has(cidr));
+   const mismatch=[...selected[key]].find(cidr=>!selected[peer].has(cidr));
+   if (mismatch) {
+    await search.fill(mismatch);
+    assert.equal(await cards.count(),0);
+    assert.match(await page.locator('#prefix-cards').innerText(),/該当する選定Prefix/);
+    searchIntersection=true;
+   }
+   query=match;
+   await search.fill(query);
+   assert.deepEqual(await cards.evaluateAll(nodes=>nodes.map(node=>node.dataset.prefix)),[match]);
+   assert.equal(await filter(choice).textContent(),choice+'と共通（'+[...selected[key]].filter(cidr=>selected[peer].has(cidr)).length.toLocaleString('en-US')+'件）');
+  }
+  saved.set(key,{choice,query});
+ }
+ for(const [key,{choice,query}] of saved){
+  await tab(key).click();
+  assert.equal(await filter(choice).getAttribute('aria-pressed'),'true');
+  assert.equal(await search.inputValue(),query);
+  assert.equal(await page.locator('#prefix-sort').inputValue(),'prefix');
+ }
+ assert.equal(pairs.size,6);
+ return {pairs:pairs.size,zeroPair,searchIntersection,pageReset};
+}
+
 async function testPrefixDashboard(page) {
  const errors = [];
  const requests = [];
@@ -164,9 +258,11 @@ async function testPrefixDashboard(page) {
   assert(await detail.isVisible());
  }
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ const overlap=await testOverlapFilters(page,data,keys);
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  assert.deepEqual(errors,[]);
  assert.deepEqual(requests,[]);
- return {tabs:4,detail:!!condition,paging,emptyTab,zeroFlow,offline:true,narrowViewport:true};
+ return {tabs:4,detail:!!condition,paging,emptyTab,zeroFlow,offline:true,narrowViewport:true,overlap};
 }
 
 module.exports = {testPrefixDashboard};

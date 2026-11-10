@@ -103,3 +103,42 @@ def test_unselected_native_frequency_rows_are_rejected(tmp_path):
                       {'A': [(p, 1, 1)], 'B': [(p, 1, 1)]})
     with pytest.raises(ValueError, match='B.*unselected prefix'):
         api('prefix_ecdf').build_prefix_ecdf_payload(tmp_path, summary)
+
+
+def test_overlap_dashboard_uses_exact_native_memberships(tmp_path):
+    from itertools import combinations
+    import re
+
+    groups = [
+        (('A', 'B', 'C-packet'), ['198.51.100.1/32']),
+        (('A', 'B'), [f'198.51.100.{i}/32' for i in range(2, 15)]),
+        (('A', 'C-packet'), ['198.51.100.20/32', '198.51.100.21/32']),
+        (('B', 'C-packet'), ['198.51.100.30/32']),
+        (('B', 'C-flow'), ['198.51.100.40/32']),
+        (('C-packet', 'C-flow'), [f'198.51.100.{i}/32' for i in range(50, 54)]),
+        (('A',), ['192.0.2.0/24']),
+        (('B',), ['203.0.113.2/32']),
+        (('C-packet',), ['203.0.113.3/32']),
+        (('C-flow',), ['192.0.2.1/32']),
+    ]
+    counts = [(1, 1), (8, 1)]
+    entries = [entry(cidr, list(keys), counts) for keys, cidrs in groups for cidr in cidrs]
+    frequencies = {key: [] for key in KEYS}
+    for row in entries:
+        row['stats']['byte_total'] = 576
+        for key in row['conditions']:
+            frequencies[key].extend((row['prefix'], packets, n) for packets, n in counts)
+    summary = fixture(tmp_path, entries, frequencies)
+    payload = api('prefix_ecdf').build_prefix_ecdf_payload(tmp_path, summary)
+    html = api('dashboard').render_prefix(payload, axis_max_packet_count='8')
+    (tmp_path / 'prefix_dashboard.html').write_text(html, encoding='utf-8')
+    assert 'id="prefix-overlap-filters"' in html
+    embedded = json.loads(re.search(r'<script id="dashboard-data" type="application/json">(.*?)</script>',
+                                    html, re.S)[1])
+    assert embedded['conditions'] == payload['conditions']
+    assert embedded['prefixes'] == payload['prefixes']
+    assert embedded['curves'] == payload['curves']
+    selected = {key: set(row['prefixes']) for key, row in embedded['conditions'].items()}
+    assert [len(selected[a] & selected[b]) for a, b in combinations(KEYS, 2)] == [14, 3, 0, 2, 1, 4]
+    assert embedded['prefixes']['192.0.2.0/24']['conditions'] == ['A']
+    assert embedded['prefixes']['192.0.2.1/32']['conditions'] == ['C-flow']
