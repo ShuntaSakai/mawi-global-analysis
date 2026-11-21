@@ -174,3 +174,21 @@ be reported with its actual environment, inputs, manifest, and review result.
   context but are not current specification authority.
 - Existing result artifacts and executed notebooks are evidence to inspect,
   not by themselves proof of real-data validation or scientific findings.
+
+## Random /24 control selection (2026-11-21)
+
+An independent saved-canonical selector supports SHA-256 ranked /24 controls,
+excluding parents of selected Flow18/Packet15 native prefixes. It records
+source/selection hashes, exact canonical membership/counters, strict input
+validation and immutable manifest-last publication. See
+[the Random guide](../guide/random-prefix-selection.md).
+Real MAWI source CIDRs, paths and Random18 execution remain unverified here;
+the research lab host is unavailable. Synthetic verification is recorded in the
+implementation plan and must not be interpreted as real-data validation.
+
+Verification: 65 new synthetic tests passed, including actual sibling loader/CLI
+compatibility. Final full suite: 1072 passed, 3 existing Notebook06 failures.
+Pre-change baseline: 1006 passed, those same three failures plus an intermittent
+legacy C quickmerge/scheduling control failure (not reproduced in final run).
+Independent review found one input-tracking race; its reproducer failed before
+the fix and passed after expected source hashes were pinned before inspection.

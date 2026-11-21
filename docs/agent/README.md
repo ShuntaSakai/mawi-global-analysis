@@ -58,3 +58,7 @@ For canonical-input **Aguri3→Agurim two-stage** packet/byte/flow experiments, 
 [the two-stage guide](../guide/aguri-two-stage.md). This separate fork/validator
 keeps the legacy RLS and fixed packet quickmerge, exact residual wire and immutable
 new runs; it does not replace the direct-prime or legacy conditions.
+
+For the conditional observed-/24 Random control excluding selected Flow18 and
+Packet15 parent /24s, read [the Random selection guide](../guide/random-prefix-selection.md).
+It is independent of existing selectors and requires strict saved two-stage lineage.

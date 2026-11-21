@@ -157,3 +157,23 @@ validator binds both commands, binary/build/patch/input/wire hashes and actual
 records without relaxing the direct-prime comparator. See
 [the two-stage guide](../guide/aguri-two-stage.md) for unavoidable old-wire and
 scheduling differences, immutable contracts and evidence limits.
+
+## Conditional Random /24 control selection
+
+Random controls are drawn from the observed canonical IPv4 TCP/UDP source OR
+destination /24 set, excluding the deduplicated union of containing /24s of
+**selected** native prefixes from the fixed successful Flow18 and Packet15
+canonical two-stage runs. Unselected Aguri candidates are not exclusions. There
+are no traffic minimums or scan removals. The independent selector validates
+counts, flags and common canonical/capture lineage and stops on disagreement.
+Versioned SHA-256 ranks with seed 20260408 select 18 /24s without replacement;
+input order and chunking do not affect selection. No post-result seed search.
+
+Flow18/Packet15/Random18 counts and native /24-/32 versus fixed /24 granularity
+remain comparison limitations. Parent-/24 exclusion does not imply disjoint
+flow populations. Canonical captured-frame byte totals can differ from the
+protocol repository's original-frame byte totals on truncated packets. Apply
+common downstream protocol counters, the same PCAP/window and src OR dst to all
+three groups, including non-TCP/UDP IPv4 without scan removal. Candidate scope
+remains TCP/UDP. See [the Random guide](../guide/random-prefix-selection.md) for
+hash encodings, provenance boundaries, synthetic evidence and lab commands.
